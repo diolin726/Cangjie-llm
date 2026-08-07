@@ -98,7 +98,8 @@ class CangjieTextGenerationModel(nn.Module):
         # 2. 建立預設因果遮罩 (Causal Mask)
         if mask is None:
             seq_len = standard_ids.shape[1]
-            mask = create_causal_mask(seq_len, standard_ids.device)
+            mask = create_causal_mask(seq_len, standard_ids.device).unsqueeze(0)
+
             
         # 3. 經過 Decoder Layers
         for decoder in self.decoders:
