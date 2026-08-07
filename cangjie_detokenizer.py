@@ -101,5 +101,5 @@ if __name__ == '__main__':
         for i in range(5):
             simulated_vec += model.embedding.pos_projections[i](jing_embs[:, i, :])
             
-    matched_char = detok.decode_vector(simulated_vec, temperature=0)
+    matched_char = detok.decode_vector(simulated_vec, temperature=0.001 , top_k = 5)
     print(f"模擬 '晶' 的 768 維向量解碼結果: {matched_char}")

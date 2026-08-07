@@ -25,12 +25,14 @@ class CangjieLlamaTokenizer:
         self.pad_cj_id = PAD_CJ_ID
         self.total_vocab_size = TOTAL_VOCAB_SIZE
 
-    def encode(self, text: str, max_seq_len: int = 512):
+    def encode(self, text: str, max_seq_len: int = 512, add_eos: bool = True):
         """
         將輸入字串轉為三大 Tensor：
         1. standard_ids: (T,) - 原有 BPE 詞庫的 ID (0~9999)
         2. is_chinese_mask: (T,) - bool，標示該 token 是否為中文文字
         3. cangjie_ids: (T, 5) - 該 token 對應的 5 個倉頡字根 ID (10000~10026)
+        
+        :param add_eos: 若為 True，自動在序列末尾添加 [eos] 結束標籤 (Token ID: 1)
         """
         standard_ids = []
         is_chinese_mask = []
@@ -39,7 +41,9 @@ class CangjieLlamaTokenizer:
         # 逐字解析 text，以兼顧中文文字與原有英文/符號
         i = 0
         n = len(text)
-        while i < n and len(standard_ids) < max_seq_len:
+        limit = max_seq_len - 1 if add_eos else max_seq_len
+
+        while i < n and len(standard_ids) < limit:
             char = text[i]
             if is_chinese_char(char):
                 # 中文字符：標記為中文，並獲取 5 個倉頡字根 ID
@@ -59,11 +63,17 @@ class CangjieLlamaTokenizer:
                 
                 encoded_seg = self.base_tokenizer.encode(non_chinese_segment)
                 for token_id in encoded_seg.ids:
-                    if len(standard_ids) >= max_seq_len:
+                    if len(standard_ids) >= limit:
                         break
                     standard_ids.append(token_id)
                     is_chinese_mask.append(False)
                     cangjie_ids.append([PAD_CJ_ID] * 5)
+
+        # 自動在資料末尾添加 [eos] (Token ID: 1)
+        if add_eos and len(standard_ids) < max_seq_len:
+            standard_ids.append(1)  # [eos] Token ID
+            is_chinese_mask.append(False)
+            cangjie_ids.append([PAD_CJ_ID] * 5)
 
         # 轉為 PyTorch Tensors
         standard_ids_t = torch.tensor(standard_ids, dtype=torch.long)
@@ -71,6 +81,7 @@ class CangjieLlamaTokenizer:
         cangjie_ids_t = torch.tensor(cangjie_ids, dtype=torch.long)
 
         return standard_ids_t, is_chinese_mask_t, cangjie_ids_t
+
 
 if __name__ == '__main__':
     tok = CangjieLlamaTokenizer()

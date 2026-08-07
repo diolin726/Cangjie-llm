@@ -123,6 +123,6 @@ if __name__ == '__main__':
     print(f"輸出: {res}")
 
     print("\n更多測試 (簡繁體混排):")
-    test_cases = ["明林", "繁體字", "简体字", "倉頡輸入法"]
+    test_cases = ["唱晶","明林", "繁體字", "简体字", "倉頡輸入法"]
     for t in test_cases:
         print(f"'{t}' -> {text_to_cangjie(t)}")
