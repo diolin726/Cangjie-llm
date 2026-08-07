@@ -11,7 +11,12 @@ CJ_RADICAL_MAP = {
     'v': '女', 'w': '田', 'x': '難', 'y': '卜', 'z': '重'
 }
 
+# 倉頡 26 個字母 + 1 個 [PAD_CJ]，共 27 個 Token
+PAD_CJ_TOKEN = '[PAD_CJ]'
+ALL_CJ_TOKENS = list(CJ_RADICAL_MAP.values()) + [PAD_CJ_TOKEN]  # 剛好 27 個 Token
+
 DICT_FILE = os.path.join(os.path.dirname(__file__), 'cangjie_dict.json')
+
 
 def _download_and_build_dict() -> dict:
     """如果本地字典不存在，從網路下載標準倉頡五代/三代碼表並建立字典檔。"""
@@ -57,7 +62,32 @@ def load_cangjie_dict() -> dict:
 # 全局載入字庫
 _CJ_DICT = None
 
+
+def get_char_cangjie_tokens(char: str, max_len: int = 5) -> List[str]:
+    """
+    將單個漢字拆解為長度固定為 5 的倉頡字根列表，不足者以 '[PAD_CJ]' 補齊。
+    例如:
+      "明" -> ['日', '月', '[PAD_CJ]', '[PAD_CJ]', '[PAD_CJ]']
+      "晶" -> ['日', '日', '日', '[PAD_CJ]', '[PAD_CJ]']
+    """
+    global _CJ_DICT
+    if _CJ_DICT is None:
+        _CJ_DICT = load_cangjie_dict()
+
+    if char in _CJ_DICT:
+        code = _CJ_DICT[char]
+        radicals = [CJ_RADICAL_MAP.get(letter.lower(), letter) for letter in code[:max_len]]
+    else:
+        radicals = []
+
+    while len(radicals) < max_len:
+        radicals.append(PAD_CJ_TOKEN)
+
+    return radicals
+
+
 def text_to_cangjie(text: str, ignore_unknown: bool = False) -> List[str]:
+
     """
     將簡體/繁體中文文本轉換為倉頡拆碼列表，每個字結尾加上 '0'。
 
