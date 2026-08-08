@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import unicodedata
-from datasets import load_dataset
+from datasets import load_from_disk
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder
 
@@ -11,9 +11,25 @@ from cangjie_convertor import cj_encoder
 torch.manual_seed(67)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 embed_size = 64
-vocab_size = 383 #須要手動調整
+vocab_size = 383 #需要手動調整
 batch_size = 32
-block_size = 10
+block_size = 256
+
+class CangjieDataset(Dataset):
+    def __init__(self, ds, block_size=256):
+        self.samples = []
+        for item in ds:
+            ids = item["input_ids"]
+            if len(ids) < block_size:
+                continue
+            for i in range(0, len(ids) - block_size, block_size):
+                self.samples.append(ids[i : i + block_size])
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return torch.tensor(self.samples[idx])
 
 
 class tokenizer():
@@ -73,6 +89,7 @@ class embedding(nn.Module):
 '''
 
 '''
+#download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw
 abc = tokenizer()
 dataset = load_dataset("json", data_files="ppt_pretrain.json", split="train")
 def process_fn(example):
@@ -92,6 +109,12 @@ tokenized_ds.save_to_disk("./ptt_cangjie_arrow")
 print("處理完成並已儲存至硬碟！")
 '''
 if __name__=="__main__":
+    tokenized_ds = load_from_disk("./ptt_cangjie_arrow")
+    train_ds = CangjieDataset(tokenized_ds, block_size)
+    train_loader = DataLoader(train_ds, batch_size, shuffle=True)
+    for batch in train_loader:
+        print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
+        break
     a=tokenizer()
     print(dataset)
     print(a.tokenize("我是abc123🥰："))
