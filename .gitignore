@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 .DS_Store
 *.pth
-
+cangjie_llm/ptt_cangjie_arrow/*
