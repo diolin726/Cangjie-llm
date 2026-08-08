@@ -11,7 +11,11 @@ class tokenizer(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.make_vocab()
+        self.cj_encoder=cj_encoder()
 
+    @torch.no_grad()
+    def make_vocab(self):
         self.vocab={}
         special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
         cangjie_symbols = [
@@ -27,15 +31,27 @@ class tokenizer(nn.Module):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
 
-        self.cj_encoder=cj_encoder()
+    def tokenlist_to_id(self , token_list ):
+        if(len(token_list) == 5  ):
+            return [[self.vocab[t] for t in token_list]]
+        if(token_list[0] in self.vocab ):
+            return [[ self.vocab[token_list[0]] ]]
+
+        try:
+            utf8_bytes = token_list[0].encode('utf-8')
+            return [ [ self.vocab[f"<BYTE_{b}>"] ] for b in utf8_bytes]
+        except Exception:
+            return [[self.vocab["[UNK]"]]]
 
     def tokenize(self, s ):
-        s = self.cj_encoder.encode(s);
-        s = [ [ self.vocab[t] for t in tl ] for tl in s ]
-        print(s)
-        return s
+        s = self.cj_encoder.encode(s)
+        ans=[]
+        for token_list in s :
+            id_list = self.tokenlist_to_id(token_list)
+            ans = ans + id_list
+        return ans
 
 
 if __name__=="__main__":
     a=tokenizer()
-    print(a.tokenize("我是abc123"))
+    print(a.tokenize("我是abc123🥰"))
