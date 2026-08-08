@@ -4,17 +4,19 @@ import torch.nn.functional as F
 
 from cangjie_convertor import cj_encoder
 
-embed_lenth = 64
+torch.manual_seed(67)
 
+embed_size = 64
+vocab_size = 383 #須要手動調整
+batch_size = 32
+block_size = 10
 
-class tokenizer(nn.Module):
+class tokenizer():
 
     def __init__(self):
-        super().__init__()
         self.make_vocab()
         self.cj_encoder=cj_encoder()
 
-    @torch.no_grad()
     def make_vocab(self):
         self.vocab={}
         special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
@@ -30,6 +32,7 @@ class tokenizer(nn.Module):
         for i in range(256):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
+        print(len(self.vocab))
 
     def tokenlist_to_id(self , token_list ):
         if(len(token_list) == 5  ):
@@ -50,6 +53,18 @@ class tokenizer(nn.Module):
             id_list = self.tokenlist_to_id(token_list)
             ans = ans + id_list
         return ans
+
+class embedding(nn.Module):
+    def __init__(self ):
+        super().__init__()
+        self.embedding=nn.Embedding(vocab_size , embed_size)
+
+    def forward( self , token_list ):
+        emb=torch.zero()
+        for token in token_list:
+            for t in token:
+
+
 
 
 if __name__=="__main__":
