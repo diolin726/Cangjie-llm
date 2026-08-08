@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import unicodedata
+import numpy as np
+import os
 from datasets import load_from_disk
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder
@@ -16,20 +18,44 @@ batch_size = 32
 block_size = 256
 
 class CangjieDataset(Dataset):
-    def __init__(self, ds, block_size=256):
-        self.samples = []
-        for item in ds:
-            ids = item["input_ids"]
-            if len(ids) < block_size:
-                continue
-            for i in range(0, len(ids) - block_size, block_size):
-                self.samples.append(ids[i : i + block_size])
+    def __init__(self, ds, block_size=256, cache_path=None):
+        if cache_path and os.path.exists(cache_path):
+            # 快取存在，直接載入（秒級）
+            print(f"從快取載入: {cache_path}")
+            self.data = torch.load(cache_path, weights_only=True)
+            print(f"載入完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
+        else:
+            # 首次：批次預處理 Arrow 資料 + 切塊
+            print("首次預處理（後續會從快取載入）...")
+            batch_sz = 50000
+            chunks = []
+            for start in range(0, len(ds), batch_sz):
+                end = min(start + batch_sz, len(ds))
+                batch_ids = ds[start:end]["input_ids"]
+                for ids in batch_ids:
+                    n = len(ids)
+                    if n < block_size:
+                        continue
+                    arr = np.array(ids, dtype=np.int16)
+                    num_blocks = (n - block_size) // block_size + 1
+                    for i in range(num_blocks):
+                        s = i * block_size
+                        chunks.append(arr[s : s + block_size])
+                print(f"  已處理 {end}/{len(ds)} 筆，共 {len(chunks)} chunks")
+
+            self.data = torch.from_numpy(np.stack(chunks))  # int16 tensor
+            # shape: (num_samples, block_size, 5)
+            print(f"預處理完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
+
+            if cache_path:
+                torch.save(self.data, cache_path)
+                print(f"已儲存快取: {cache_path}")
 
     def __len__(self):
-        return len(self.samples)
+        return self.data.shape[0]
 
     def __getitem__(self, idx):
-        return torch.tensor(self.samples[idx])
+        return self.data[idx].to(torch.long)
 
 
 class tokenizer():
@@ -109,12 +135,14 @@ tokenized_ds.save_to_disk("./ptt_cangjie_arrow")
 print("處理完成並已儲存至硬碟！")
 '''
 if __name__=="__main__":
+
     tokenized_ds = load_from_disk("./ptt_cangjie_arrow")
-    train_ds = CangjieDataset(tokenized_ds, block_size)
+    train_ds = CangjieDataset(tokenized_ds, block_size, cache_path="./ptt_cangjie_cached.pt")
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         break
+
     a=tokenizer()
     print(dataset)
     print(a.tokenize("我是abc123🥰："))
