@@ -12,15 +12,15 @@ from cangjie_convertor import cj_encoder
 
 torch.manual_seed(67)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-embed_size = 64
+embed_size = 256
 vocab_size = 383 #需要手動調整
 batch_size = 32
 block_size = 256
+n_head = 8
 
 class CangjieDataset(Dataset):
-    def __init__(self, ds, block_size=256, cache_path=None):
+    def __init__(self, ds=None, block_size=256, cache_path=None):
         if cache_path and os.path.exists(cache_path):
-            # 快取存在，直接載入（秒級）
             print(f"從快取載入: {cache_path}")
             self.data = torch.load(cache_path, weights_only=True)
             print(f"載入完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
@@ -104,13 +104,15 @@ class tokenizer():
 
 class embedding(nn.Module):
     # cj_a=4 ~ cj_z=29
-    CJ_START = 4
-    CJ_END = 29
+
 
     def __init__(self, vocab_size, embed_size):
         super().__init__()
+        a = tokenizer()
+        self.CJ_START = a.vocab['cj_a'] # 4
+        self.CJ_END = a.vocab['cj_z'] # 29
         self.token_emb = nn.Embedding(vocab_size, embed_size)
-        self.position = nn.linear( embed_size * 5 , embed_size , bias=False ) # can try other structure
+        self.position = nn.Linear( embed_size * 5 , embed_size , bias=False ) # can try other structure
 
     def forward(self, x):
         # (B, T, 5)
@@ -129,6 +131,40 @@ class embedding(nn.Module):
         output = torch.where(is_cj, cj_emb, non_cj_emb)  # (B, T, E)
 
         return output
+class Head(nn.Module):
+
+    def __init__(self , head_size ):
+        super().__init__()
+        self.query = nn.Linear( embed_size, head_size , bias = False )
+        self.value = nn.Linear( embed_size, head_size , bias = False )
+        self.key = nn.Linear( embed_size, head_size , bias = False )
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward( self , x ):
+        B,T,C = x.shape
+        q =  self.query(x)
+        v =  self.value(x)
+        k =  self.key(x)
+        # qvk  = B, T, hs
+        w = q @ k.transpose(-2 , -1) * k.shape(-1)**(-0.5) # B,T,T
+        w = w.masked_fill(self.tril[:T , :T] == 0 , float('-inf'))
+        w = F.softmax(w , dim = -1)
+        return w @ v
+
+class Mutihead(nn.Module):
+    def __init__(self , n_head , head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
+        self.proj = nn.Linear( head_size * n_head , embed_size )
+
+    def forward( self ,x ):
+        out = torch.cat([ h(x) for h in self.heads ])
+        out = self.proj(out)
+        return out
+
+class FFN(nn.Module):
+    def __init__(self, embed_size ):
+        super().__init__()
 '''
 #download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw on huggingface
 abc = tokenizer()
@@ -151,8 +187,8 @@ print("處理完成並已儲存至硬碟！")
 '''
 if __name__=="__main__":
 
-    tokenized_ds = load_from_disk("./ptt_cangjie_arrow")
-    train_ds = CangjieDataset(tokenized_ds, block_size, cache_path="./ptt_cangjie_cached.pt")
+    tokenized_ds = 123#load_from_disk("./ptt_cangjie_arrow") # if got cache
+    train_ds = CangjieDataset( tokenized_ds , block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
