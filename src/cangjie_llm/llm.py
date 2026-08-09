@@ -17,6 +17,7 @@ vocab_size = 383 #需要手動調整
 batch_size = 32
 block_size = 256
 n_head = 8
+n_layer = 8
 
 class CangjieDataset(Dataset):
     def __init__(self, ds=None, block_size=256, cache_path=None):
@@ -152,7 +153,7 @@ class Head(nn.Module):
         return w @ v
 
 class Mutihead(nn.Module):
-    def __init__(self , n_head , head_size):
+    def __init__(self , n_head , head_size , embed_size ):
         super().__init__()
         self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
         self.proj = nn.Linear( head_size * n_head , embed_size )
@@ -162,9 +163,63 @@ class Mutihead(nn.Module):
         out = self.proj(out)
         return out
 
-class FFN(nn.Module):
+class FF(nn.Module):
     def __init__(self, embed_size ):
         super().__init__()
+        self.ff=nn.Sequential(
+            nn.Linear(embed_size , embed_size * 4),
+            nn.SiLu,
+            nn.Linear(embed_size *4 , embed_size)
+            )
+    def forward(self , x ):
+        return self.ff(x)
+
+class layer(nn.Module):
+    def __init__(self, n_head , embed_size ):
+        super().__init__()
+        head_size = embed_size // n_head
+        self.mh = Mutihead(n_head , head_size , embed_size )
+        self.ff = FF(embed_size)
+        self.ln1 = nn.LayerNorm(embed_size)
+        self.ln2 = nn.LayerNorm(embed_size)
+    def forward( self , x ):
+        out = self.mh(self.ln1(x))
+        out = self.ff(self.ln2(out))
+        return out
+
+class LLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.embedding = embedding(vocab_size , embed_size)
+        self.position_embedding = nn.Embedding( block_size,embed_size )
+        self.layers = nn.Sequential(
+            *[ layer(n_head , embed_size) for _ in range(n_layer) ]
+            )
+        self.ln_f = nn.LayerNorm(embed_size)
+
+        self.apply(self._init_weights) #from karpathy
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    def forward(self, x , target=None ):
+        B, T, C= idx.shape
+        emb = self.embedding(x)
+        pos_emb = self.position_embedding(torch.arange(T, device=device))
+        logit = emb + pos_emb
+        logit = self.layers(logit)
+        logit = self.ln_f(logit)
+        if(target is None):
+            loss = None
+        else:
+            target_emb = self.embedding(target) # 可能還是要用cross entropy , 如果直接比較embedding有可能最終全部都相似 , 可是要用的話要先有detokenizer , 我還沒寫
+
+
+
 '''
 #download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw on huggingface
 abc = tokenizer()
