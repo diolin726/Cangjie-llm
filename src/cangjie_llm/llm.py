@@ -110,7 +110,7 @@ class embedding(nn.Module):
     def __init__(self, vocab_size, embed_size):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, embed_size)
-        self.position = nn.linear( embed_size * 5 , embed_size ) # can try other structure
+        self.position = nn.linear( embed_size * 5 , embed_size , bias=False ) # can try other structure
 
     def forward(self, x):
         # (B, T, 5)
