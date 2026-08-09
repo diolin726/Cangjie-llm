@@ -1,3 +1,3 @@
 from .encoder import cj_encoder
-
-__all__=["encode"]
+from .decoder import cj_decoder
+__all__=["cj_encoder" , "cj_decoder"]

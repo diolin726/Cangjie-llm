@@ -1,7 +1,8 @@
 import json
+from pathlib import Path
 class cj_encoder:
     def __init__(self):
-        with open("../cangjie_convertor/cj5.json", "r", encoding="utf-8") as f:
+        with open(Path(__file__).resolve().parent / "cj5.json", "r", encoding="utf-8") as f:
             self.data_map = json.load(f)
 
     def encode(self, s):
@@ -20,3 +21,4 @@ if __name__ == '__main__':
     e = cj_encoder()
     a = e.encode("我是abc123🥰")
     print(a)
+    print(len(e.data_map))

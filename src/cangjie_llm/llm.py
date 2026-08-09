@@ -7,7 +7,7 @@ import numpy as np
 import os
 from datasets import load_from_disk
 from torch.utils.data import DataLoader, Dataset
-from cangjie_convertor import cj_encoder
+from cangjie_convertor import cj_encoder , cj_decoder
 
 
 torch.manual_seed(67)
@@ -62,6 +62,7 @@ class CangjieDataset(Dataset):
 class tokenizer():
 
     def __init__(self):
+        self.decoder=cj_decoder()
         self.make_vocab()
         self.cj_encoder=cj_encoder()
 
@@ -76,11 +77,32 @@ class tokenizer():
                 'cj_y', 'cj_z',
                 ]
         ascii_chars = [chr(i) for i in range(32, 127)] + ['\n', '\t']
-        for s in special_tokens + cangjie_symbols + ascii_chars:
+        for s in cangjie_symbols + special_tokens  + ascii_chars:
             self.vocab[s] = len(self.vocab)
         for i in range(256):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
+
+    def all_vocab(self):
+        """建立所有 13228 個輸出詞彙的 5-tuple tensor"""
+        PAD = self.vocab["[PAD]"]
+        codes = []
+        self.output_tokens = []
+
+        # 1) 非 CJK tokens (357個)
+        for token_name, token_id in self.vocab.items():
+            if not token_name.startswith('cj_'):
+                codes.append([token_id, PAD, PAD, PAD, PAD])
+                self.output_tokens.append(token_name)
+
+        # 2) 倉頡排列 (12871個)
+        for code in sorted(self.decoder.cj_keys):
+            ids = [self.vocab[f"cj_{c}"] for c in code]
+            ids += [PAD] * (5 - len(ids))
+            codes.append(ids)
+            self.output_tokens.append(code)
+
+        return torch.tensor(codes, dtype=torch.long)
 
     def tokenlist_to_id(self , token_list ):
         if(len(token_list) == 5  ):
@@ -104,36 +126,32 @@ class tokenizer():
 
 
 class embedding(nn.Module):
-    # cj_a=4 ~ cj_z=29
-
-
     def __init__(self, vocab_size, embed_size):
         super().__init__()
-        a = tokenizer()
-        self.CJ_START = a.vocab['cj_a'] # 4
-        self.CJ_END = a.vocab['cj_z'] # 29
+        tok = tokenizer()
+        self.CJ_START = tok.vocab['cj_a']
+        self.CJ_END = tok.vocab['cj_z']
         self.token_emb = nn.Embedding(vocab_size, embed_size)
-        self.position = nn.Linear( embed_size * 5 , embed_size , bias=False ) # can try other structure
+        self.position = nn.Linear(embed_size * 5, embed_size, bias=False)
 
     def forward(self, x):
-        # (B, T, 5)
-        B, T, C = x.shape
+        # x: (..., 5) -> returns (..., E)
+        shape = x.shape[:-1]
+        x_flat = x.reshape(-1, 5)
 
-        all_emb = self.token_emb(x)              # (B, T, 5, E)
+        all_emb = self.token_emb(x_flat)                          # (-1, 5, E)
+        first_id = x_flat[:, 0]                                   # (-1,)
+        is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END)
 
-        first_id = x[:, :, 0]                     # (B, T)
-        is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END)  # (B, T)
+        non_cj_emb = all_emb[:, 0, :]                             # (-1, E)
+        cj_emb = self.position(all_emb.reshape(-1, 5 * embed_size))# (-1, E)
 
-        non_cj_emb = all_emb[:, :, 0, :]           # (B, T, E)
+        is_cj = is_cj.unsqueeze(-1)
+        output = torch.where(is_cj, cj_emb, non_cj_emb)
+        return output.reshape(*shape, -1)
 
-        cj_emb = self.position( all_emb.view(B,T,-1) )
 
-        is_cj = is_cj.unsqueeze(-1)                 # (B, T, 1)
-        output = torch.where(is_cj, cj_emb, non_cj_emb)  # (B, T, E)
-
-        return output
 class Head(nn.Module):
-
     def __init__(self , head_size ):
         super().__init__()
         self.query = nn.Linear( embed_size, head_size , bias = False )
@@ -146,11 +164,11 @@ class Head(nn.Module):
         q =  self.query(x)
         v =  self.value(x)
         k =  self.key(x)
-        # qvk  = B, T, hs
-        w = q @ k.transpose(-2 , -1) * k.shape(-1)**(-0.5) # B,T,T
+        w = q @ k.transpose(-2 , -1) * (k.shape[-1]**-0.5)
         w = w.masked_fill(self.tril[:T , :T] == 0 , float('-inf'))
         w = F.softmax(w , dim = -1)
         return w @ v
+
 
 class Mutihead(nn.Module):
     def __init__(self , n_head , head_size , embed_size ):
@@ -159,20 +177,22 @@ class Mutihead(nn.Module):
         self.proj = nn.Linear( head_size * n_head , embed_size )
 
     def forward( self ,x ):
-        out = torch.cat([ h(x) for h in self.heads ])
+        out = torch.cat([ h(x) for h in self.heads ], dim=-1)
         out = self.proj(out)
         return out
+
 
 class FF(nn.Module):
     def __init__(self, embed_size ):
         super().__init__()
         self.ff=nn.Sequential(
             nn.Linear(embed_size , embed_size * 4),
-            nn.SiLu,
+            nn.SiLU(),
             nn.Linear(embed_size *4 , embed_size)
             )
     def forward(self , x ):
         return self.ff(x)
+
 
 class layer(nn.Module):
     def __init__(self, n_head , embed_size ):
@@ -183,21 +203,42 @@ class layer(nn.Module):
         self.ln1 = nn.LayerNorm(embed_size)
         self.ln2 = nn.LayerNorm(embed_size)
     def forward( self , x ):
-        out = self.mh(self.ln1(x))
-        out = self.ff(self.ln2(out))
-        return out
+        x = x + self.mh(self.ln1(x))
+        x = x + self.ff(self.ln2(x))
+        return x
+
+
+class cj_head(nn.Module):
+    def __init__(self, emb_layer):
+        super().__init__()
+        self.emb_layer = emb_layer
+        tok = tokenizer()
+        codes = tok.all_vocab()  # (13228, 5)
+        self.register_buffer('output_codes', codes)
+        self.tuple_to_id = {tuple(c.tolist()): i for i, c in enumerate(codes)}
+
+    def input_to_output_idx(self, target):
+        # target (B, T, 5) -> output_idx (B, T)
+        device = target.device
+        flat = target.reshape(-1, 5).tolist()
+        indices = [self.tuple_to_id[tuple(t)] for t in flat]
+        return torch.tensor(indices, dtype=torch.long, device=device).reshape(target.shape[:-1])
+
+    def forward(self, hidden):
+        # hidden: (B, T, E) -> logits: (B, T, 13228)
+        output_emb = self.emb_layer(self.output_codes) # 直接使用 emb_layer
+        return hidden @ output_emb.T
+
 
 class LLM(nn.Module):
     def __init__(self):
         super().__init__()
-        self.embedding = embedding(vocab_size , embed_size)
-        self.position_embedding = nn.Embedding( block_size,embed_size )
-        self.layers = nn.Sequential(
-            *[ layer(n_head , embed_size) for _ in range(n_layer) ]
-            )
+        self.embedding = embedding(vocab_size, embed_size)
+        self.position_embedding = nn.Embedding(block_size, embed_size)
+        self.layers = nn.Sequential(*[layer(n_head, embed_size) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(embed_size)
-
-        self.apply(self._init_weights) #from karpathy
+        self.head = cj_head(self.embedding)
+        self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -206,20 +247,20 @@ class LLM(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-    def forward(self, x , target=None ):
-        B, T, C= idx.shape
+
+    def forward(self, x, target=None):
+        B, T, C = x.shape
         emb = self.embedding(x)
-        pos_emb = self.position_embedding(torch.arange(T, device=device))
-        logit = emb + pos_emb
-        logit = self.layers(logit)
-        logit = self.ln_f(logit)
-        if(target is None):
-            loss = None
-        else:
-            target_emb = self.embedding(target) # 可能還是要用cross entropy , 如果直接比較embedding有可能最終全部都相似 , 可是要用的話要先有detokenizer , 我還沒寫
+        pos_emb = self.position_embedding(torch.arange(T, device=x.device))
+        h = self.ln_f(self.layers(emb + pos_emb))
+        logits = self.head(h)  # (B, T, 13228)
 
+        loss = None
+        if target is not None:
+            target_idx = self.head.input_to_output_idx(target)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_idx.view(-1))
 
-
+        return logits, loss
 '''
 #download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw on huggingface
 abc = tokenizer()
