@@ -101,21 +101,36 @@ class tokenizer():
             ans.extend(id_list)
         return ans
 
-'''
+
 class embedding(nn.Module):
-    def __init__(self ):
+    # cj_a=4 ~ cj_z=29
+    CJ_START = 4
+    CJ_END = 29
+
+    def __init__(self, vocab_size, embed_size):
         super().__init__()
-        self.embedding=nn.Embedding(vocab_size , embed_size)
+        self.token_emb = nn.Embedding(vocab_size, embed_size)
+        self.position = nn.linear( embed_size * 5 , embed_size ) # can try other structure
 
-    def forward( self , token_list ):
-        emb=torch.zero()
-        for token in token_list:
-            for t in token:
+    def forward(self, x):
+        # (B, T, 5)
+        B, T, C = x.shape
 
+        all_emb = self.token_emb(x)              # (B, T, 5, E)
+
+        first_id = x[:, :, 0]                     # (B, T)
+        is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END)  # (B, T)
+
+        non_cj_emb = all_emb[:, :, 0, :]           # (B, T, E)
+
+        cj_emb = self.position( all_emb.view(B,T,-1) )
+
+        is_cj = is_cj.unsqueeze(-1)                 # (B, T, 1)
+        output = torch.where(is_cj, cj_emb, non_cj_emb)  # (B, T, E)
+
+        return output
 '''
-
-'''
-#download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw
+#download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw on huggingface
 abc = tokenizer()
 dataset = load_dataset("json", data_files="ppt_pretrain.json", split="train")
 def process_fn(example):
@@ -144,5 +159,4 @@ if __name__=="__main__":
         break
 
     a=tokenizer()
-    print(dataset)
     print(a.tokenize("我是abc123🥰："))
