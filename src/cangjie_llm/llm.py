@@ -5,12 +5,11 @@ import torch.nn.functional as F
 import unicodedata
 import numpy as np
 import os
-from datasets import load_from_disk
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder , cj_decoder
 
 
-torch.manual_seed(67)
+torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 embed_size = 256
 vocab_size = 383 #需要手動調整
@@ -19,44 +18,47 @@ block_size = 256
 n_head = 8
 n_layer = 8
 
-class CangjieDataset(Dataset):
-    def __init__(self, ds=None, block_size=256, cache_path=None):
+class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
+    def __init__(self, json_path="ppt_pretrain.json", block_size=256, cache_path=None):
+        self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
             self.data = torch.load(cache_path, weights_only=True)
             print(f"載入完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
         else:
-            # 首次：批次預處理 Arrow 資料 + 切塊
             print("首次預處理（後續會從快取載入）...")
-            batch_sz = 50000
-            chunks = []
-            for start in range(0, len(ds), batch_sz):
-                end = min(start + batch_sz, len(ds))
-                batch_ids = ds[start:end]["input_ids"]
-                for ids in batch_ids:
-                    n = len(ids)
-                    if n < block_size:
-                        continue
-                    arr = np.array(ids, dtype=np.int16)
-                    num_blocks = (n - block_size) // block_size + 1
-                    for i in range(num_blocks):
-                        s = i * block_size
-                        chunks.append(arr[s : s + block_size])
-                print(f"  已處理 {end}/{len(ds)} 筆，共 {len(chunks)} chunks")
+            from datasets import load_dataset
+            tok = tokenizer()
+            BOS = [tok.vocab["[BOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
+            EOS = [tok.vocab["[EOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
 
-            self.data = torch.from_numpy(np.stack(chunks))  # int16 tensor
-            # shape: (num_samples, block_size, 5)
+            ds = load_dataset("json", data_files=json_path, split="train")
+            all_tokens = []
+            for i, row in enumerate(ds):
+                text = row.get("text") or ""
+                ids = tok.tokenize(text)  # List of 5-tuples
+                all_tokens.append(BOS)
+                all_tokens.extend(ids)
+                all_tokens.append(EOS)
+                if (i + 1) % 10000 == 0:
+                    print(f"  已處理 {i+1}/{len(ds)} 篇，共 {len(all_tokens)} tokens")
+
+            # 轉成 (N, 5) 的 int16 tensor
+            self.data = torch.tensor(all_tokens, dtype=torch.int16)
             print(f"預處理完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
-
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
 
     def __len__(self):
-        return self.data.shape[0]
+        return len(self.data) - self.block_size
 
     def __getitem__(self, idx):
-        return self.data[idx].to(torch.long)
+        # x: 滑動窗口 (block_size, 5)
+        x = self.data[idx : idx + self.block_size].to(torch.long)
+        # target: 緊接在窗口後面的下一個 token (5,)
+        target = self.data[idx + self.block_size].to(torch.long)
+        return x, target
 
 
 class tokenizer():
@@ -82,7 +84,7 @@ class tokenizer():
         for i in range(256):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
-    # [TODO]
+
     def all_vocab(self):
         """建立所有 13228 個輸出詞彙的 5-tuple tensor"""
         PAD = self.vocab["[PAD]"]
@@ -96,7 +98,7 @@ class tokenizer():
                 self.output_tokens.append(token_name)
 
         # 2) 倉頡排列 (12871個)
-        for code in sorted(self.decoder.cj_keys):
+        for code in self.decoder.cj_keys:
             ids = [self.vocab[f"cj_{c}"] for c in code]
             ids += [PAD] * (5 - len(ids))
             codes.append(ids)
@@ -116,7 +118,6 @@ class tokenizer():
         except Exception:
             return [[self.vocab["[UNK]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"]]]
 
-    # [TODO] end
     def tokenize(self, s ):
         s = self.cj_encoder.encode( unicodedata.normalize('NFKC',s).replace('\u3000', ' ') )
         ans=[]
@@ -209,7 +210,7 @@ class layer(nn.Module):
         return x
 
 
-class cj_head(nn.Module): # [TODO]
+class cj_head(nn.Module):
     def __init__(self, emb_layer):
         super().__init__()
         self.emb_layer = emb_layer
@@ -226,8 +227,8 @@ class cj_head(nn.Module): # [TODO]
         return torch.tensor(indices, dtype=torch.long, device=device).reshape(target.shape[:-1])
 
     def forward(self, hidden):
-        # hidden: (B, T, E) -> logits: (B, T, 13228)
-        output_emb = self.emb_layer(self.output_codes) # 直接使用 emb_layer
+        # hidden: (B , E) -> logits: (B, 13228)
+        output_emb = self.emb_layer(self.output_codes) # [13228 , E]
         return hidden @ output_emb.T
 
 
@@ -254,38 +255,23 @@ class LLM(nn.Module):
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
+        h = h[:,-1,:] # (B , E)
         logits = self.head(h)  # (B, T, 13228)
 
         loss = None
         if target is not None:
             target_idx = self.head.input_to_output_idx(target)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_idx.view(-1))
+            loss = F.cross_entropy(logits, target_idx)
 
         return logits, loss
-'''
-#download ppt_pretrain.json from yuhuanstudio/PTT-pretrain-zhtw on huggingface
-abc = tokenizer()
-dataset = load_dataset("json", data_files="ppt_pretrain.json", split="train")
-def process_fn(example):
-    text = example["text"] if example["text"] else ""
-    return {"input_ids": abc.tokenize(text)}
-print("開始平行 Tokenize...")
-tokenized_ds = dataset.map(
-    process_fn,
-    remove_columns=["text"],  # 轉完即刪除原始文字，節省空間
-    num_proc=8,               # 根據你的 CPU 核心數設定（如 8 或 16）
-    desc="Processing PTT Dataset"
-)
 
-# 5. 將處理完的結果直接「儲存在硬碟」（存成 Arrow 格式）
-# 這樣你下次開機訓練時，不用重新 tokenize，1 秒鐘就能載入！
-tokenized_ds.save_to_disk("./ptt_cangjie_arrow")
-print("處理完成並已儲存至硬碟！")
-'''
 if __name__=="__main__":
 
-    tokenized_ds = 123#load_from_disk("./ptt_cangjie_arrow") # if got cache
-    train_ds = CangjieDataset( tokenized_ds , block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
+    train_ds = CangjieDataset( block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
+    #test
+    print(train_ds.__len__())
+    print(train_ds.__getitem__(0))
+    #
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
