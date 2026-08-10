@@ -11,7 +11,10 @@ from cangjie_convertor import cj_encoder , cj_decoder
 
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 print( f"using {device}" )
+
+dropout=0.2
 embed_size = 256
 vocab_size = 383 #需要手動調整
 batch_size = 32
@@ -164,6 +167,7 @@ class Head(nn.Module):
         self.value = nn.Linear( embed_size, head_size , bias = False )
         self.key = nn.Linear( embed_size, head_size , bias = False )
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward( self , x ):
         B,T,C = x.shape
@@ -173,6 +177,7 @@ class Head(nn.Module):
         w = q @ k.transpose(-2 , -1) * (k.shape[-1]**-0.5)
         w = w.masked_fill(self.tril[:T , :T] == 0 , float('-inf'))
         w = F.softmax(w , dim = -1)
+        w = self.dropout(w)
         return w @ v
 
 
@@ -181,10 +186,12 @@ class Mutihead(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
         self.proj = nn.Linear( head_size * n_head , embed_size )
+        self.dropout = nn.Dropout(dropout)
 
     def forward( self ,x ):
         out = torch.cat([ h(x) for h in self.heads ], dim=-1)
         out = self.proj(out)
+        out = self.dropout(out )
         return out
 
 
@@ -194,7 +201,8 @@ class FF(nn.Module):
         self.ff=nn.Sequential(
             nn.Linear(embed_size , embed_size * 4),
             nn.SiLU(),
-            nn.Linear(embed_size *4 , embed_size)
+            nn.Linear(embed_size *4 , embed_size),
+            nn.Dropout(dropout),
             )
     def forward(self , x ):
         return self.ff(x)
