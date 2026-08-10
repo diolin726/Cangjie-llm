@@ -11,7 +11,7 @@ from cangjie_convertor import cj_encoder , cj_decoder
 
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print( f"using{device}" )
+print( f"using {device}" )
 embed_size = 256
 vocab_size = 383 #需要手動調整
 batch_size = 32
@@ -67,7 +67,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
 
 class tokenizer():
-    #[TODO] add jieba
+    #[TODO] add jieba to decode
     #if decoder.id_decode() returns a list len > 1
     #用結巴確認前面幾個字加目前的候選字是不是一個詞,找詞頻最高的輸出,如果都不是一個字就輸出字本人詞頻最高的
     def __init__(self):
@@ -143,21 +143,18 @@ class embedding(nn.Module):
         self.token_emb = nn.Embedding(vocab_size, embed_size)
         self.position = nn.Linear(embed_size * 5, embed_size, bias=False)
 
-    def forward(self, x):
-        # x: (..., 5) -> returns (..., E)
-        shape = x.shape[:-1]
-        x_flat = x.reshape(-1, 5)
+    def forward(self, x): # x= B , T , 5
 
-        all_emb = self.token_emb(x_flat)                          # (-1, 5, E)
-        first_id = x_flat[:, 0]                                   # (-1,)
-        is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END)
+        all_emb = self.token_emb(x)                          # B T 5 E
+        first_id = x[:,:,0]
+        is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END) # B T
 
-        non_cj_emb = all_emb[:, 0, :]                             # (-1, E)
-        cj_emb = self.position(all_emb.reshape(-1, 5 * embed_size))# (-1, E)
+        non_cj_emb = all_emb[:, :, 0 , :]                             # (B ,T ,E)
+        cj_emb = self.position( all_emb.flatten(2) )# (B ,T, E)
 
-        is_cj = is_cj.unsqueeze(-1)
+        is_cj.unsqueeze(-1)
         output = torch.where(is_cj, cj_emb, non_cj_emb)
-        return output.reshape(*shape, -1)
+        return output
 
 
 class Head(nn.Module):
