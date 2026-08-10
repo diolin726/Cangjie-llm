@@ -59,12 +59,11 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         self.data=self.data.to(torch.long)
 #        self.data.share_memory_()
     def __len__(self):
-        return len(self.data) - self.block_size
+        return len(self.data) - self.block_size // self.block_size
 
     def __getitem__(self, idx):
-        # x: 滑動窗口 (block_size, 5)
+        idx = idx * self.block_size
         x = self.data[idx : idx + self.block_size]
-        # target: 緊接在窗口後面的下一個 token (5,)
         target = self.data[idx + self.block_size]
         return x, target
 
@@ -280,7 +279,10 @@ class LLM(nn.Module):
 if __name__=="__main__":
     model = LLM()
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"總參數量: {total_params:,} ({total_params / 1e6:.2f} M)")
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"總參數量: {total_params:>12,} ({total_params / 1e6:.2f} M)")
+    print(f"可訓練參數量: {trainable_params:>12,} ({trainable_params / 1e6:.2f} M)")
+    print(f"凍結參數量:{total_params-trainable_params:>12,}")
 
     head = cj_head( embedding(1,1))
     print(head.input_to_output_idx(torch.tensor([[ 30,  26,  26,  26,  26],
