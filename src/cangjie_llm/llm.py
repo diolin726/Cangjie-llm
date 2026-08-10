@@ -53,7 +53,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
-            self.data=self.data.to(torch.long)
+        self.data=self.data.to(torch.long)
 #        self.data.share_memory_()
     def __len__(self):
         return len(self.data) - self.block_size
