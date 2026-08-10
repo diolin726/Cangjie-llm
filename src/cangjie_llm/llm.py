@@ -150,7 +150,7 @@ class embedding(nn.Module):
         is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END) # B T
 
         non_cj_emb = all_emb[:, :, 0 , :]                             # (B ,T ,E)
-        cj_emb = self.position( all_emb.flatten(2) )# (B ,T, E)
+        cj_emb = self.position( all_emb.flatten(2) )#(B ,T, E)
 
         is_cj = is_cj.unsqueeze(-1)
         output = torch.where(is_cj, cj_emb, non_cj_emb)
@@ -232,7 +232,7 @@ class cj_head(nn.Module):
 
     def forward(self, hidden):
         # hidden: (B , E) -> logits: (B, 13228)
-        output_emb = self.emb_layer(self.output_codes) # [13228 , E]
+        output_emb = self.emb_layer(self.output_codes.unsqueeze(1)).squeeze(1) # [13228 , E]
         return hidden @ output_emb.T
 
 
