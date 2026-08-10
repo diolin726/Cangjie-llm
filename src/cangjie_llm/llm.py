@@ -23,7 +23,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
-            self.data = torch.load(cache_path, weights_only=True)
+            self.data = torch.load(cache_path, weights_only=True).to(torch.long)
             print(f"載入完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
         else:
             print("首次預處理（後續會從快取載入）...")
@@ -49,15 +49,16 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
+            self.data=self.data.to(torch.long)
 
     def __len__(self):
         return len(self.data) - self.block_size
 
     def __getitem__(self, idx):
         # x: 滑動窗口 (block_size, 5)
-        x = self.data[idx : idx + self.block_size].to(torch.long)
+        x = self.data[idx : idx + self.block_size]
         # target: 緊接在窗口後面的下一個 token (5,)
-        target = self.data[idx + self.block_size].to(torch.long)
+        target = self.data[idx + self.block_size]
         return x, target
 
 
