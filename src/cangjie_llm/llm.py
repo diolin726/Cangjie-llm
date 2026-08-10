@@ -11,6 +11,7 @@ from cangjie_convertor import cj_encoder , cj_decoder
 
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print( f"using{device}" )
 embed_size = 256
 vocab_size = 383 #需要手動調整
 batch_size = 32
@@ -53,7 +54,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
             self.data=self.data #.to(torch.long)
-        self.data.share_memory_()
+#        self.data.share_memory_()
     def __len__(self):
         return len(self.data) - self.block_size
 
