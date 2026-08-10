@@ -278,6 +278,9 @@ class LLM(nn.Module):
         return logits, loss
 
 if __name__=="__main__":
+    model = LLM()
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"總參數量: {total_params:,} ({total_params / 1e6:.2f} M)")
 
     head = cj_head( embedding(1,1))
     print(head.input_to_output_idx(torch.tensor([[ 30,  26,  26,  26,  26],
