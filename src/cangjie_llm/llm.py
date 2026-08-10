@@ -19,7 +19,7 @@ block_size = 256
 n_head = 8
 n_layer = 8
 lr = 1e-4
-epochs = 1
+epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
@@ -335,7 +335,7 @@ if __name__=="__main__":
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"current Loss: {loss.item():.4f}"
                 )
-    torch.save(model.state_dict(), "cangjie.pt")
+        torch.save(model.state_dict(), f"cangjie_epoch_{epoch}.pt")
 
     # a=tokenizer()
     # print(a.tokenize("我是abc123🥰："))
