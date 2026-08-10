@@ -82,14 +82,14 @@ class tokenizer():
         for i in range(256):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
-
+    # [TODO]
     def all_vocab(self):
         """建立所有 13228 個輸出詞彙的 5-tuple tensor"""
         PAD = self.vocab["[PAD]"]
         codes = []
         self.output_tokens = []
 
-        # 1) 非 CJK tokens (357個)
+        # 1) 非 CJK tokens (357個) #383 - 26 = 357
         for token_name, token_id in self.vocab.items():
             if not token_name.startswith('cj_'):
                 codes.append([token_id, PAD, PAD, PAD, PAD])
@@ -116,6 +116,7 @@ class tokenizer():
         except Exception:
             return [[self.vocab["[UNK]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"]]]
 
+    # [TODO] end
     def tokenize(self, s ):
         s = self.cj_encoder.encode( unicodedata.normalize('NFKC',s).replace('\u3000', ' ') )
         ans=[]
@@ -208,7 +209,7 @@ class layer(nn.Module):
         return x
 
 
-class cj_head(nn.Module):
+class cj_head(nn.Module): # [TODO]
     def __init__(self, emb_layer):
         super().__init__()
         self.emb_layer = emb_layer
