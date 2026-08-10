@@ -272,6 +272,7 @@ if __name__=="__main__":
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
+        print("Target shape" , target )
         break
 
     a=tokenizer()
