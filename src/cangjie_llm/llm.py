@@ -59,10 +59,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         self.data=self.data.to(torch.long)
 #        self.data.share_memory_()
     def __len__(self):
-        return (len(self.data) - self.block_size ) // self.block_size
+        return (len(self.data) - self.block_size ) * 4 // self.block_size
 
     def __getitem__(self, idx):
-        idx = idx * self.block_size
+        idx = idx * self.block_size // 4
         x = self.data[idx : idx + self.block_size]
         target = self.data[idx + self.block_size]
         return x, target
