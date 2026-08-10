@@ -70,6 +70,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
 class tokenizer():
     #[TODO] add jieba to decode
+    #英文就直接轉,id 0 ~ vocab_size -26 -1
     #if decoder.id_decode() returns a list len > 1
     #用結巴確認前面幾個字加目前的候選字是不是一個詞,找詞頻最高的輸出,如果都不是一個字就輸出字本人詞頻最高的
     def __init__(self):
@@ -283,7 +284,9 @@ if __name__=="__main__":
     print(f"總參數量: {total_params:>12,} ({total_params / 1e6:.2f} M)")
     print(f"可訓練參數量: {trainable_params:>12,} ({trainable_params / 1e6:.2f} M)")
     print(f"凍結參數量:{total_params-trainable_params:>12,}")
-
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name:<40} | {param.numel():,}")
     head = cj_head( embedding(1,1))
     print(head.input_to_output_idx(torch.tensor([[ 30,  26,  26,  26,  26],
         [  7,  14,  20,  20,  10],
