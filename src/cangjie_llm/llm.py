@@ -152,7 +152,7 @@ class embedding(nn.Module):
         non_cj_emb = all_emb[:, :, 0 , :]                             # (B ,T ,E)
         cj_emb = self.position( all_emb.flatten(2) )# (B ,T, E)
 
-        is_cj.unsqueeze(-1)
+        is_cj = is_cj.unsqueeze(-1)
         output = torch.where(is_cj, cj_emb, non_cj_emb)
         return output
 
