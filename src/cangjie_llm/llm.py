@@ -14,7 +14,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 print( f"using {device}" )
 
-dropout=0.2
+dropout=0.1
 embed_size = 256
 vocab_size = 383 #需要手動調整
 batch_size = 32
