@@ -26,6 +26,10 @@ class cj_decoder:
 
         return self.cj_decodemap[key]
 
+    def id_decode(self, idx):
+        return self.cj_decodemap[self.cj_keys[idx]]
+
+
 if __name__ == "__main__":
     a = cj_decoder()
     print(len(a.cj_keys))

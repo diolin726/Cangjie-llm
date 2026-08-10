@@ -17,13 +17,16 @@ batch_size = 32
 block_size = 256
 n_head = 8
 n_layer = 8
+lr = 1e-4
+epochs = 1
+log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path="ppt_pretrain.json", block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
-            self.data = torch.load(cache_path, weights_only=True).to(torch.long)
+            self.data = torch.load(cache_path, weights_only=True) #.to(torch.long)
             print(f"載入完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
         else:
             print("首次預處理（後續會從快取載入）...")
@@ -49,8 +52,8 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
-            self.data=self.data.to(torch.long)
-
+            self.data=self.data #.to(torch.long)
+        self.data.share_memory_()
     def __len__(self):
         return len(self.data) - self.block_size
 
@@ -63,7 +66,9 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
 
 class tokenizer():
-
+    #[TODO] add jieba
+    #if decoder.id_decode() returns a list len > 1
+    #用結巴確認前面幾個字加目前的候選字是不是一個詞,找詞頻最高的輸出,如果都不是一個字就輸出字本人詞頻最高的
     def __init__(self):
         self.decoder=cj_decoder()
         self.make_vocab()
@@ -221,11 +226,11 @@ class cj_head(nn.Module):
         self.tuple_to_id = {tuple(c.tolist()): i for i, c in enumerate(codes)}
 
     def input_to_output_idx(self, target):
-        # target (B, T, 5) -> output_idx (B, T)
+        # target (B, 5) -> output_idx (B, 13228)
         device = target.device
-        flat = target.reshape(-1, 5).tolist()
+        flat = target.tolist()
         indices = [self.tuple_to_id[tuple(t)] for t in flat]
-        return torch.tensor(indices, dtype=torch.long, device=device).reshape(target.shape[:-1])
+        return torch.tensor(indices, device=device)
 
     def forward(self, hidden):
         # hidden: (B , E) -> logits: (B, 13228)
@@ -257,24 +262,82 @@ class LLM(nn.Module):
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
         h = h[:,-1,:] # (B , E)
-        logits = self.head(h)  # (B, T, 13228)
+        logits = self.head(h)  # (B, 13228)
 
         loss = None
         if target is not None:
-            target_idx = self.head.input_to_output_idx(target)
+            target_idx = self.head.input_to_output_idx(target) # [B ]
             loss = F.cross_entropy(logits, target_idx)
 
         return logits, loss
 
 if __name__=="__main__":
 
+    head = cj_head( embedding(1,1))
+    print(head.input_to_output_idx(torch.tensor([[ 30,  26,  26,  26,  26],
+        [  7,  14,  20,  20,  10],
+        [ 89,  26,  26,  26,  26],
+        [ 99,  26,  26,  26,  26],
+        [  1,   7,  13,   5,  26],
+        [  7,   0,  15,   8,  26],
+        [ 44,  26,  26,  26,  26],
+        [ 96,  26,  26,  26,  26],
+        [ 18,  12,   7,   0,  26],
+        [ 64,  26,  26,  26,  26],
+        [255,  26,  26,  26,  26],
+        [ 12,   6,   1,  26,  26],
+        [ 91,  26,  26,  26,  26],
+        [ 56,  26,  26,  26,  26],
+        [ 21,   9,   7,  22,  26],
+        [ 13,   1,  18,   7,  16],
+        [ 45,  26,  26,  26,  26],
+        [ 24,  17,  18,  20,  26],
+        [ 30,  26,  26,  26,  26],
+        [ 24,   2,  10,  26,  26],
+        [  7,  14,  12,  12,  13],
+        [ 24,  17,  16,  12,   1],
+        [  3,   0,   7,  20,  26],
+        [ 14,   7,  16,  26,  26],
+        [ 42,  26,  26,  26,  26],
+        [  7,  16,  15,   7,   7],
+        [ 19,  22,   3,  26,  26],
+        [ 50,  26,  26,  26,  26],
+        [ 24,  19,   0,   9,  26],
+        [113,  26,  26,  26,  26],
+        [  0,  26,  26,  26,  26],
+        [ 13,  23,  20,  26,  26]], dtype=torch.int16))) #676767
+
+
     train_ds = CangjieDataset( block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
 
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
-        print("Target shape" , target )
+        print("Target shape" , target.shape )
         break
+    model = LLM().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr)
+    model.train()
+    for epoch in range(epochs):
+        num_batches = len(train_loader)
+        print(f"epoch{epoch} starts")
+        for step,(x, y) in enumerate(train_loader):
+            x = x.to(device)
+            y = y.to(device)
 
-    a=tokenizer()
-    print(a.tokenize("我是abc123🥰："))
+            optimizer.zero_grad()
+            logits , loss = model(x , y )
+
+            loss.backward()
+            optimizer.step()
+            if (step + 1) % log_interval == 0 or (step + 1) == num_batches:
+                progress = (step + 1) / num_batches * 100
+                print(
+                    f"epoch [{epoch+1}/{epochs}] | "
+                    f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
+                    f"current Loss: {loss.item():.4f}"
+                )
+    torch.save(model.state_dict(), "cangjie.pt")
+
+    # a=tokenizer()
+    # print(a.tokenize("我是abc123🥰："))
