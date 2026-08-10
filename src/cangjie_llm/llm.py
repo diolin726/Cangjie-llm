@@ -268,12 +268,9 @@ class LLM(nn.Module):
 if __name__=="__main__":
 
     train_ds = CangjieDataset( block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
-    #test
-    print(train_ds.__len__())
-    print(train_ds.__getitem__(0))
-    #
+
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
-    for batch in train_loader:
+    for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         break
 
