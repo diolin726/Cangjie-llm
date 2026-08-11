@@ -15,18 +15,18 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print( f"using {device}" )
 
 dropout=0.1
-embed_size = 256
+embed_size = 384
 vocab_size = 383 #需要手動調整
 batch_size = 32
 block_size = 256
-n_head = 8
-n_layer = 8
-lr = 1e-4
+n_head = 12
+n_layer = 12
+lr = 3e-4
 epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path="ppt_pretrain.json", block_size=256, cache_path=None):
+    def __init__(self, json_path=None,dataset_name="yuhuanstudio/wikipedia-2024modify-pretrain-zh-tw" , block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
@@ -39,7 +39,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             BOS = [tok.vocab["[BOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
             EOS = [tok.vocab["[EOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
 
-            ds = load_dataset("json", data_files=json_path, split="train")
+            if json_path is not None :
+                ds = load_dataset("json", data_files=json_path, split="train")
+            else:
+                ds =  load_dataset(dataset_name , split="train")
             all_tokens = []
             for i, row in enumerate(ds):
                 text = row.get("text") or ""
