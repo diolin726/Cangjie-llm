@@ -282,7 +282,7 @@ class LLM(nn.Module):
 
 if __name__=="__main__":
     model = LLM()
-    otal_params = sum(p.numel() for p in model.parameters())
+    total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"總參數量: {total_params:>12,} ({total_params / 1e6:.2f} M)")
     print(f"可訓練參數量: {trainable_params:>12,} ({trainable_params / 1e6:.2f} M)")
