@@ -45,7 +45,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 ds = load_dataset("json", data_files=json_path, split="train")
             else:
                 ds =  load_dataset(dataset_name , split="train")
-            chunk_size=500000
+            chunk_size=5000000
             chunk_tokens = []
             token_count=0
             tensor_list=[]
