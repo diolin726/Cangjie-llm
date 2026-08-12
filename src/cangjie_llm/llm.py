@@ -45,19 +45,29 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 ds = load_dataset("json", data_files=json_path, split="train")
             else:
                 ds =  load_dataset(dataset_name , split="train")
-            all_tokens = []
+            chunk_size=500000
+            chunk_tokens = []
+            token_count=0
+            tensor_list=[]
             for i, row in enumerate(ds):
                 text = row.get("text") or ""
                 text = stotconverter.convert(text)
                 ids = tok.tokenize(text)  # List of 5-tuples
-                all_tokens.append(BOS)
-                all_tokens.extend(ids)
-                all_tokens.append(EOS)
+                chunk_tokens.append(BOS)
+                chunk_tokens.extend(ids)
+                chunk_tokens.append(EOS)
                 if (i + 1) % 10000 == 0:
-                    print(f"  已處理 {i+1}/{len(ds)} 篇，共 {len(all_tokens)} tokens")
+                    print(f"  已處理 {i+1}/{len(ds)} 篇，共 {len(chunk_tokens) + token_count} tokens")
+                if( len(chunk_tokens) >= chunk_size ):
+                    tensor_list.append( torch.tensor(chunk_tokens , dtype=torch.int16))
+                    token_count += len(chunk_tokens)
+                    chunk_tokens=[]
+            if(chunk_tokens):
+                tensor_list.append(torch.tensor(chunk_tokens , dtype=torch.int16))
+                chunk_tokens=[]
 
             # 轉成 (N, 5) 的 int16 tensor
-            self.data = torch.tensor(all_tokens, dtype=torch.int16)
+            self.data = torch.cat(tensor_list , dim=0)
             print(f"預處理完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
             if cache_path:
                 torch.save(self.data, cache_path)
