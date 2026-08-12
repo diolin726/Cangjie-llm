@@ -35,6 +35,8 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         else:
             print("首次預處理（後續會從快取載入）...")
             from datasets import load_dataset
+            import opencc
+            stotconverter = opencc.OpenCC('s2twp')
             tok = tokenizer()
             BOS = [tok.vocab["[BOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
             EOS = [tok.vocab["[EOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
@@ -46,6 +48,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             all_tokens = []
             for i, row in enumerate(ds):
                 text = row.get("text") or ""
+                text = stotconverter.convert(text)
                 ids = tok.tokenize(text)  # List of 5-tuples
                 all_tokens.append(BOS)
                 all_tokens.extend(ids)

@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "datasets>=5.0.1",
     "jieba>=0.42.1",
+    "opencc>=1.4.1",
     "torch>=2.13.0",
 ]
 
