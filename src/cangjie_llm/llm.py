@@ -17,7 +17,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 32
+batch_size = 64
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -59,7 +59,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
-        self.data=self.data.to(torch.long)
+         #self.data=self.data.to(torch.long)
 #        self.data.share_memory_()
     def __len__(self):
         return (len(self.data) - self.block_size ) * 4 // self.block_size
@@ -339,8 +339,8 @@ if __name__=="__main__":
         num_batches = len(train_loader)
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
-            x = x.to(device)
-            y = y.to(device)
+            x = x.to(torch.long).to(device)
+            y = y.to(torch.long).to(device)
 
             optimizer.zero_grad()
             logits , loss = model(x , y )
