@@ -151,7 +151,102 @@ class tokenizer():
             id_list = self.tokenlist_to_id(token_list)
             ans.extend(id_list)
         return ans
+    def id_decode(self, ids):
+        """
+        ids: 單一 token，長度 5 的 id list/tuple/tensor（tokenize() 輸出的其中一筆）
+        回傳：
+          - 特殊符號 [PAD]/[BOS]/[EOS] -> "" （不佔輸出文字）
+          - [UNK] -> "�"
+          - <BYTE_x> -> 原樣回傳字串 "<BYTE_x>"，交給 detokenize() 合併還原成 utf-8 字元
+          - 一般 ASCII / 英文 -> 該字元本身 (str)
+          - 倉頡碼只對應 1 個字 -> 該字 (str)
+          - 倉頡碼對應多個同碼字 -> list[str]，交給 detokenize() 用 jieba 消歧
+        """
+        if not hasattr(self, 'inv_vocab'):
+            self.inv_vocab = {v: k for k, v in self.vocab.items()}
 
+        first_tok = self.inv_vocab[int(ids[0])]
+
+        # if first_tok in ("[PAD]", "[BOS]", "[EOS]"): #之後要做正常輸出再改就好
+        #     return ""
+        # if first_tok == "[UNK]":
+        #     return "�"
+        if not first_tok.startswith("cj_"):
+            # 英文/ASCII: id 直接對應字元本身，不需查表轉換
+            return first_tok
+
+        # 倉頡碼 token: 把 5 個 id 還原成碼字串，例如 [cj_a, cj_b, PAD, PAD, PAD] -> "ab"
+        code = ""
+        for tid in ids:
+            name = self.inv_vocab[int(tid)]
+            if name == "[PAD]":
+                break
+            code += name[3:]  # 去掉 "cj_" 前綴
+
+        candidates = self.decoder.id_decode(code)  # 假設回傳同碼候選字 list[str]，需依實際 API 調整
+        if not candidates:
+            return "�"
+        if len(candidates) == 1:
+            return candidates[0]
+        return list(candidates)  # 多個同碼字，留給 detokenize() 消歧
+
+    def detokenize(self, id_list):
+        """
+        id_list: tokenize() 回傳的格式，一個 list，每個元素是長度 5 的 id list/tensor
+        用 jieba 對倉頡同碼字做消歧：
+          - 先看前面幾個已確定的字 + 目前候選字，是否能組成 jieba 詞典中的詞，
+            取詞頻最高者
+          - 都組不成詞的話，退回取候選字中單字詞頻最高者
+        """
+        import jieba
+        jieba.initialize()  # 確保 jieba.dt.FREQ 已載入
+
+        raw = [self.id_decode(ids) for ids in id_list]
+
+        # 合併連續的 <BYTE_x> token，還原成原本的 utf-8 字元（例如 emoji）
+        merged = []
+        i = 0
+        while i < len(raw):
+            item = raw[i]
+            if isinstance(item, str) and item.startswith("<BYTE_"):
+                byte_buf = []
+                while i < len(raw) and isinstance(raw[i], str) and raw[i].startswith("<BYTE_"):
+                    byte_buf.append(int(raw[i][6:-1]))
+                    i += 1
+                try:
+                    merged.append(bytes(byte_buf).decode('utf-8'))
+                except UnicodeDecodeError:
+                    merged.append("�")
+                continue
+            merged.append(item)
+            i += 1
+
+        # 用結巴消歧倉頡同碼字
+        result = []
+        for item in merged:
+            if not isinstance(item, list):
+                result.append(item)
+                continue
+
+            # 往前抓最近幾個已確定的單一字元當作組詞的上下文
+            context = "".join(c for c in result[-4:] if isinstance(c, str) and len(c) == 1)
+
+            best_char, best_freq, found_word = None, -1, False
+            for cand in item:
+                # 檢查 context 的各種後綴 + cand 是否為 jieba 詞典中的詞
+                for start in range(len(context)):
+                    word = context[start:] + cand
+                    freq = jieba.dt.FREQ.get(word)
+                    if freq and freq > best_freq:
+                        best_freq, best_char, found_word = freq, cand, True
+
+            if not found_word:
+                # 沒有任何候選字能跟上下文組詞，退回比較單字詞頻
+                best_char = max(item, key=lambda c: jieba.dt.FREQ.get(c, 0))
+
+            result.append(best_char)
+
+        return "".join(result)
 
 class embedding(nn.Module):
     def __init__(self, vocab_size, embed_size):
