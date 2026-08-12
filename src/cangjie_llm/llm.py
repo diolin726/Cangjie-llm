@@ -26,7 +26,7 @@ epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None,dataset_name="yuhuanstudio/wikipedia-2024modify-pretrain-zh-tw" , block_size=256, cache_path=None):
+    def __init__(self, json_path=None,dataset_name="erhwenkuo/zhwikisource-zhtw" , block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
@@ -282,14 +282,14 @@ class LLM(nn.Module):
 
 if __name__=="__main__":
     model = LLM()
-    total_params = sum(p.numel() for p in model.parameters())
+    otal_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"總參數量: {total_params:>12,} ({total_params / 1e6:.2f} M)")
     print(f"可訓練參數量: {trainable_params:>12,} ({trainable_params / 1e6:.2f} M)")
     print(f"凍結參數量:{total_params-trainable_params:>12,}")
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(f"{name:<40} | {param.numel():,}")
+             print(f"{name:<40} | {param.numel():,}")
     head = cj_head( embedding(1,1))
     print(head.input_to_output_idx(torch.tensor([[ 30,  26,  26,  26,  26],
         [  7,  14,  20,  20,  10],
