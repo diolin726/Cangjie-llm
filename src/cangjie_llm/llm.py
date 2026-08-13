@@ -280,30 +280,34 @@ class Head(nn.Module):
         self.query = nn.Linear( embed_size, head_size , bias = False )
         self.value = nn.Linear( embed_size, head_size , bias = False )
         self.key = nn.Linear( embed_size, head_size , bias = False )
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        self.dropout = nn.Dropout(dropout)
-
+        # self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        # self.dropout = nn.Dropout(dropout)
     def forward( self , x ):
         B,T,C = x.shape
         q =  self.query(x)
         v =  self.value(x)
         k =  self.key(x)
-        w = q @ k.transpose(-2 , -1) * (k.shape[-1]**-0.5)
-        w = w.masked_fill(self.tril[:T , :T] == 0 , float('-inf'))
-        w = F.softmax(w , dim = -1)
-        w = self.dropout(w)
-        return w @ v
+        # w = q @ k.transpose(-2 , -1) * (k.shape[-1]**-0.5)
+        # w = w.masked_fill(self.tril[:T , :T] == 0 , float('-inf'))
+        # w = F.softmax(w , dim = -1)
+        # w = self.dropout(w)
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            is_causal=True,
+            dropout_p=dropout if self.training else 0.0
+        )
+        return out # w @ v
 
 
 class Mutihead(nn.Module):
     def __init__(self , n_head , head_size , embed_size ):
         super().__init__()
         self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
-        self.proj = nn.Linear( head_size * n_head , embed_size )
+        self.proj = nn.Linear( head_size * n_head , embed_size , bias = False )
         self.dropout = nn.Dropout(dropout)
 
     def forward( self ,x ):
-        out = torch.cat([ h(x) for h in self.heads ], dim=-1)  #[TODO] gemini says use F.scaled_dot_product_attention will be faster
+        out = torch.cat([ h(x) for h in self.heads ], dim=-1)
         out = self.proj(out)
         out = self.dropout(out )
         return out
@@ -325,6 +329,7 @@ class FF(nn.Module):
 class layer(nn.Module):
     def __init__(self, n_head , embed_size ):
         super().__init__()
+        assert embed_size % n_head == 0, "embed_size 必須能被 n_head 整除"
         head_size = embed_size // n_head
         self.mh = Mutihead(n_head , head_size , embed_size )
         self.ff = FF(embed_size)
