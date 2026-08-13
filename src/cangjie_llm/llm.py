@@ -52,6 +52,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             chunk_tokens = []
             token_count=0
             tensor_list=[]
+            print(ds[0])
             for i, row in enumerate(ds):
                 if isinstance(row , dict ) :
                     text = row.get("text") or ""
