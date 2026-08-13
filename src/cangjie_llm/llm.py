@@ -44,7 +44,13 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if json_path is not None :
                 ds = load_dataset("json", data_files=json_path, split="train")
             else:
-                ds =  load_dataset(dataset_name , split="train")
+                if(dataset_name=="erhwenkuo/zhwikisource-zhtw"):
+                    ds =  load_dataset(dataset_name , split="train")
+                else:
+                    ds=load_dataset(
+                        "zaibd/wikipedia-pretrain-zh-tw",
+                        data_dir="2605"
+                        )
             chunk_size=5000000
             chunk_tokens = []
             token_count=0
