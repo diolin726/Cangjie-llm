@@ -442,7 +442,13 @@ if __name__=="__main__":
 
     train_ds = CangjieDataset( dataset_name="zaibd/wikipedia-pretrain-zh-tw" ,dataset_dir="2605", block_size=block_size, cache_path="./cangjie_cached.pt")
 
-    train_loader = DataLoader(train_ds, batch_size, shuffle=True)
+    train_loader = DataLoader(train_ds,
+                              batch_size,
+                              shuffle=True,
+                              num_workers=8,
+                              pin_memory=True,
+                              persistent_workers=True,
+                              prefetch_factor=4)
     for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         print("Target shape" , target.shape )
