@@ -17,7 +17,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 48
+batch_size = 64
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -48,7 +48,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     dataset_name ,
                     data_dir=dataset_dir
                     )
-            chunk_size=5000000
+            chunk_size=10000000
             chunk_tokens = []
             token_count=0
             tensor_list=[]
