@@ -17,7 +17,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 64
+batch_size = 128
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -458,7 +458,8 @@ if __name__=="__main__":
             y = y.to(torch.long).to(device)
 
             optimizer.zero_grad()
-            logits , loss = model(x , y )
+            with autocast(device_type='cuda', dtype=torch.bfloat16):
+                logits , loss = model(x , y )
 
             loss.backward()
             optimizer.step()
