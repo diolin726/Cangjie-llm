@@ -1,17 +1,18 @@
 import torch 
 import torch.nn.functional as F 
 from cangjie_llm import tokenizer, LLM 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
 llm = LLM()
-state_dict = torch.load("./src/cangjie_llm/cangjie_epoch_1_latest.pt",map_location = device)
+state_dict = torch.load("./src/cangjie_llm/cangjie_epoch_2_latest.pt",map_location = device)
 llm.load_state_dict(state_dict)
 llm.to(device)
 llm.eval()
 
 tok_id_list = [2]
-
-temp = 0.01
+tok_id_list = tok_id_list + tok.cj_encoder.encode_to_id( "" )
+temp = 0.0001
 max_token = 50 
 all_vocab = tok.all_vocab().tolist()
 

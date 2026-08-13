@@ -95,28 +95,11 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 class tokenizer():
     def __init__(self):
         self.decoder=cj_decoder()
-        self.make_vocab()
-        self.cj_encoder=cj_encoder()
+        self.cj_encoder=cj_encoder(vocab_size)
+        self.vocab = self.cj_encoder.vocab
+        self.id_to_vocab = self.cj_encoder.id_to_vocab
 
-    def make_vocab(self):
-        self.vocab={}
-        self.id_to_vocab=[]
-        special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
-        cangjie_symbols = [
-                'cj_a', 'cj_b', 'cj_c', 'cj_d', 'cj_e', 'cj_f',
-                'cj_g', 'cj_h', 'cj_i', 'cj_j', 'cj_k', 'cj_l',
-                'cj_m', 'cj_n', 'cj_o', 'cj_p', 'cj_q', 'cj_r',
-                'cj_s', 'cj_t', 'cj_u', 'cj_v', 'cj_w', 'cj_x',
-                'cj_y', 'cj_z',
-                ]
-        ascii_chars = [chr(i) for i in range(32, 127)] + ['\n', '\t']
-        for s in cangjie_symbols + special_tokens  + ascii_chars:
-            self.vocab[s] = len(self.vocab)
-            self.id_to_vocab.append(s)
-        for i in range(256):
-            byte_token = f"<BYTE_{i}>"
-            self.vocab[byte_token] = len(self.vocab)
-            self.id_to_vocab.append(byte_token)
+
 
     def all_vocab(self):
         """建立所有 13228 個輸出詞彙的 5-tuple tensor"""
@@ -445,7 +428,10 @@ if __name__=="__main__":
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         print("Target shape" , target.shape )
         break
-    model = LLM().to(device)
+
+    state_dict = torch.load("./cangjie_epoch_2_latest.pt",map_location = device)
+    model.load_state_dict(state_dict)
+    model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr)
     model.train()
     for epoch in range(epochs):
