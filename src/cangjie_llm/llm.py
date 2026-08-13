@@ -92,10 +92,6 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
 
 class tokenizer():
-    #[TODO] add jieba to decode
-    #英文就直接轉,id 0 ~ vocab_size -26 -1
-    #if decoder.id_decode() returns a list len > 1
-    #用結巴確認前面幾個字加目前的候選字是不是一個詞,找詞頻最高的輸出,如果都不是一個字就輸出字本人詞頻最高的
     def __init__(self):
         self.decoder=cj_decoder()
         self.make_vocab()
