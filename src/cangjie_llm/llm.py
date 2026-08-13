@@ -8,6 +8,7 @@ import os
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder , cj_decoder
 from torch.amp import autocast
+import threading
 
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -413,6 +414,14 @@ class LLM(nn.Module):
 
         return logits, loss
 
+@torch.no_grad()
+def save_checkpoint( state_dict , save_path ):
+    def _save():
+        torch.save(state_dict , save_path )
+        print(f"saved to {save_path}")
+    thread = threading.Thread(target = _save() ,daemon=True)
+    thread.start()
+
 if __name__=="__main__":
     model = LLM()
     total_params = sum(p.numel() for p in model.parameters())
@@ -494,7 +503,7 @@ if __name__=="__main__":
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"current Loss: {loss.item():.4f}"
                 )
-                torch.save(model.state_dict(), f"cangjie_epoch_{epoch}.pt")
+                save_checkpoint({k: v.cpu().clone() for k, v in model.state_dict().items()}, f"cangjie_epoch_{epoch+1}_latest.pt")
 
     # a=tokenizer()
     # print(a.tokenize("我是abc123🥰："))
