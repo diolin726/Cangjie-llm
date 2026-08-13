@@ -17,7 +17,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 64
+batch_size = 48
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -87,7 +87,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __getitem__(self, idx):
         idx = idx * self.block_size // 2
         x = self.data[idx : idx + self.block_size]
-        target = self.data[idx + 1: idx + self.block_size]
+        target = self.data[idx + 1: idx + self.block_size + 1]
         return x, target
 
 
@@ -494,7 +494,7 @@ if __name__=="__main__":
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"current Loss: {loss.item():.4f}"
                 )
-        torch.save(model.state_dict(), f"cangjie_epoch_{epoch}.pt")
+                torch.save(model.state_dict(), f"cangjie_epoch_{epoch}.pt")
 
     # a=tokenizer()
     # print(a.tokenize("我是abc123🥰："))
