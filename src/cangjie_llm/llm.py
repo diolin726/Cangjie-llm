@@ -307,7 +307,7 @@ class Mutihead(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward( self ,x ):
-        out = torch.cat([ h(x) for h in self.heads ], dim=-1)
+        out = torch.cat([ h(x) for h in self.heads ], dim=-1)  #[TODO] gemini says use F.scaled_dot_product_attention will be faster
         out = self.proj(out)
         out = self.dropout(out )
         return out
@@ -353,7 +353,7 @@ class cj_head(nn.Module):
         # target (B, 5) -> output_idx (B, 13228)
         device = target.device
         flat = target.tolist()
-        indices = [self.tuple_to_id[tuple(t)] for t in flat]
+        indices = [self.tuple_to_id[tuple(t)] for t in flat]  # [TODO] this part is too slow
         return torch.tensor(indices, device=device)
 
     def forward(self, hidden):
@@ -385,7 +385,7 @@ class LLM(nn.Module):
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
-        h = h[:,-1,:] # (B , E)
+        h = h[:,-1,:] # (B , E)     #[TODO] should predict all token to speed up train
         logits = self.head(h)  # (B, 13228)
 
         loss = None
