@@ -402,13 +402,13 @@ class LLM(nn.Module):
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
-        h = h[:,-1,:] # (B , E)     #[TODO] should predict all token to speed up train
+        # h = h[:,-1,:] # (B , E)
         logits = self.head(h)  # (B, 13228)
 
         loss = None
         if target is not None:
             target_idx = self.head.input_to_output_idx(target) # [B ]
-            loss = F.cross_entropy(logits, target_idx)
+            loss = F.cross_entropy(logits.view(-1, 13228), target_idx.view(-1))
 
         return logits, loss
 
