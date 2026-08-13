@@ -26,7 +26,7 @@ epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None,dataset_name , dataset_dir , block_size=256, cache_path=None):
+    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
