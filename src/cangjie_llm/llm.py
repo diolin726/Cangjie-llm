@@ -17,7 +17,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 128
+batch_size = 96
 block_size = 256
 n_head = 12
 n_layer = 12
