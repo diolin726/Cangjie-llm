@@ -26,7 +26,7 @@ epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None,dataset_name="erhwenkuo/zhwikisource-zhtw" , block_size=256, cache_path=None):
+    def __init__(self, json_path=None,dataset_name , dataset_dir , block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
@@ -44,13 +44,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if json_path is not None :
                 ds = load_dataset("json", data_files=json_path, split="train")
             else:
-                if(dataset_name=="erhwenkuo/zhwikisource-zhtw"):
-                    ds =  load_dataset(dataset_name , split="train")
-                else:
-                    ds=load_dataset(
-                        "zaibd/wikipedia-pretrain-zh-tw",
-                        data_dir="2605"
-                        )
+                ds=load_dataset(
+                    dataset_name ,
+                    data_dir=dataset_dir
+                    )
             chunk_size=5000000
             chunk_tokens = []
             token_count=0
@@ -439,7 +436,7 @@ if __name__=="__main__":
         [ 13,  23,  20,  26,  26]], dtype=torch.int16))) #676767
 
 
-    train_ds = CangjieDataset( block_size=block_size, cache_path="./ptt_cangjie_cached.pt")
+    train_ds = CangjieDataset( dataset_name="zaibd/wikipedia-pretrain-zh-tw" ,dataset_dir="2605", block_size=block_size, cache_path="./cangjie_cached.pt")
 
     train_loader = DataLoader(train_ds, batch_size, shuffle=True)
     for batch , target in train_loader:
