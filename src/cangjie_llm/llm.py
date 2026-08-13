@@ -7,7 +7,7 @@ import numpy as np
 import os
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder , cj_decoder
-
+from torch.amp import autocast
 
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
