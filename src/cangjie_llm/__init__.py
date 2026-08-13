@@ -1,2 +1,2 @@
-def main() -> None:
-    print("Hello from cangjie-llm!")
+from .llm import LLM , tokenizer
+__all__=["tokenizer" , "LLM"]
