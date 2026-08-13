@@ -53,7 +53,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             token_count=0
             tensor_list=[]
             for i, row in enumerate(ds):
-                text = row.get("text") or ""
+                if isinstance(row , dict ) :
+                    text = row.get("text") or ""
+                else:
+                    text = row
                 text = stotconverter.convert(text)
                 ids = tok.tokenize(text)  # List of 5-tuples
                 chunk_tokens.append(BOS)
