@@ -347,14 +347,31 @@ class cj_head(nn.Module):
         tok = tokenizer()
         codes = tok.all_vocab()  # (13228, 5)
         self.register_buffer('output_codes', codes)
-        self.tuple_to_id = {tuple(c.tolist()): i for i, c in enumerate(codes)}
+        codes_long = codes.to(torch.long)
+        hashes = (
+            (codes_long[:, 0] << 36) |
+            (codes_long[:, 1] << 27) |
+            (codes_long[:, 2] << 18) |
+            (codes_long[:, 3] << 9)  |
+            codes_long[:, 4]
+        ) # needs to be fixed if vocab_size add
+        sorted_hashes, sorted_indices = torch.sort(hashes)
+        self.register_buffer('sorted_hashes', sorted_hashes)   # (13228,) int64
+        self.register_buffer('sorted_indices', sorted_indices) # (13228,) int64
+        # self.tuple_to_id = {tuple(c.tolist()): i for i, c in enumerate(codes)}
 
     def input_to_output_idx(self, target):
         # target (B, 5) -> output_idx (B, 13228)
-        device = target.device
-        flat = target.tolist()
-        indices = [self.tuple_to_id[tuple(t)] for t in flat]  # [TODO] this part is too slow
-        return torch.tensor(indices, device=device)
+        target_long = target.to(torch.long)
+        target_hash = (
+            (target_long[..., 0] << 36) |
+            (target_long[..., 1] << 27) |
+            (target_long[..., 2] << 18) |
+            (target_long[..., 3] << 9)  |
+            target_long[..., 4]
+        )
+        pos = torch.searchsorted(self.sorted_hashes, target_hash)
+        return self.sorted_indices[pos]
 
     def forward(self, hidden):
         # hidden: (B , E) -> logits: (B, 13228)
