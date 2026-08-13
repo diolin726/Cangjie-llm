@@ -100,6 +100,7 @@ class tokenizer():
 
     def make_vocab(self):
         self.vocab={}
+        self.id_to_vocab=[]
         special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
         cangjie_symbols = [
                 'cj_a', 'cj_b', 'cj_c', 'cj_d', 'cj_e', 'cj_f',
@@ -111,9 +112,11 @@ class tokenizer():
         ascii_chars = [chr(i) for i in range(32, 127)] + ['\n', '\t']
         for s in cangjie_symbols + special_tokens  + ascii_chars:
             self.vocab[s] = len(self.vocab)
+            self.id_to_vocab.append(s)
         for i in range(256):
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
+            self.id_to_vocab.append(byte_token)
 
     def all_vocab(self):
         """建立所有 13228 個輸出詞彙的 5-tuple tensor"""
@@ -155,57 +158,19 @@ class tokenizer():
             id_list = self.tokenlist_to_id(token_list)
             ans.extend(id_list)
         return ans
-    def id_decode(self, ids):
-        """
-        ids: 單一 token，長度 5 的 id list/tuple/tensor（tokenize() 輸出的其中一筆）
-        回傳：
-          - 特殊符號 [PAD]/[BOS]/[EOS] -> "" （不佔輸出文字）
-          - [UNK] -> "�"
-          - <BYTE_x> -> 原樣回傳字串 "<BYTE_x>"，交給 detokenize() 合併還原成 utf-8 字元
-          - 一般 ASCII / 英文 -> 該字元本身 (str)
-          - 倉頡碼只對應 1 個字 -> 該字 (str)
-          - 倉頡碼對應多個同碼字 -> list[str]，交給 detokenize() 用 jieba 消歧
-        """
-        if not hasattr(self, 'inv_vocab'):
-            self.inv_vocab = {v: k for k, v in self.vocab.items()}
-
-        first_tok = self.inv_vocab[int(ids[0])]
-
-        # if first_tok in ("[PAD]", "[BOS]", "[EOS]"): #之後要做正常輸出再改就好
-        #     return ""
-        # if first_tok == "[UNK]":
-        #     return "�"
-        if not first_tok.startswith("cj_"):
-            # 英文/ASCII: id 直接對應字元本身，不需查表轉換
-            return first_tok
-
-        # 倉頡碼 token: 把 5 個 id 還原成碼字串，例如 [cj_a, cj_b, PAD, PAD, PAD] -> "ab"
-        code = ""
-        for tid in ids:
-            name = self.inv_vocab[int(tid)]
-            if name == "[PAD]":
-                break
-            code += name[3:]  # 去掉 "cj_" 前綴
-
-        candidates = self.decoder.id_decode(code)  # 假設回傳同碼候選字 list[str]，需依實際 API 調整
-        if not candidates:
-            return "�"
-        if len(candidates) == 1:
-            return candidates[0]
-        return list(candidates)  # 多個同碼字，留給 detokenize() 消歧
-
-    def detokenize(self, id_list):
-        """
-        id_list: tokenize() 回傳的格式，一個 list，每個元素是長度 5 的 id list/tensor
-        用 jieba 對倉頡同碼字做消歧：
-          - 先看前面幾個已確定的字 + 目前候選字，是否能組成 jieba 詞典中的詞，
-            取詞頻最高者
-          - 都組不成詞的話，退回取候選字中單字詞頻最高者
-        """
+    def id_decode(self, ids): #id list [26,15,23 ...]
+        ans=[]
+        for id in ids:
+            if id < vocab_size - 26:
+                ans.append(self.id_to_vocab[id + 26])
+            else:
+                ans.append( self.decoder.id_decode(id+26-vocab_size) )
+        return ans
+    def detokenize(self, id_list): # id list [26 , 15 , 23 ...]
         import jieba
         jieba.initialize()  # 確保 jieba.dt.FREQ 已載入
 
-        raw = [self.id_decode(ids) for ids in id_list]
+        raw = self.id_decode(id_list)
 
         # 合併連續的 <BYTE_x> token，還原成原本的 utf-8 字元（例如 emoji）
         merged = []

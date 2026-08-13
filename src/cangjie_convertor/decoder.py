@@ -14,7 +14,7 @@ class cj_decoder:
             self.cj_decodemap[self.data_map[key]].append(key)
         #print(self.cj_decodemap)
 
-        self.cj_keys = set(self.cj_keys)
+        self.cj_keys = list(set(self.cj_keys))
 
     def decode(self, s): # input a char [ 'cj_a', 'cj_b', '[PAD]' , '[PAD]' , '[PAD]' ]
         key = ''

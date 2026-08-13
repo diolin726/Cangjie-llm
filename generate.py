@@ -9,18 +9,18 @@ llm.load_state_dict(state_dict)
 llm.to(device)
 llm.eval()
 
-tok_list = [[[tok.vocab["[BOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]]]
-tok_list = torch.tensor(tok_list).to(device)
+tok_id_list = [2]
+
 temp = 0.01
-max_token = 20 
-all_vocab = tok.all_vocab()
+max_token = 50 
+all_vocab = tok.all_vocab().tolist()
 
 
 for _ in range(max_token):
+    tok_list = torch.tensor([ all_vocab[tok_id] for tok_id in tok_id_list ]).view(1,-1,5).to(device)
     next_tok , _ = llm(tok_list)
     next_tok = next_tok[:,-1,:]
     next_tok = F.softmax(next_tok/temp , dim = -1)
-    next_tok = torch.multinomial(next_tok , num_samples=1)
-    next_tok = all_vocab[next_tok.view(-1),:]
-    tok_list = torch.cat([token_list , next_tok] , dim = 1).to(device)
-    print(tok.detokenize(tok_list))
+    next_tok_id = torch.multinomial(next_tok , num_samples=1) # gen id 
+    tok_id_list.append(next_tok_id)
+    print(tok.detokenize(tok_id_list))  # god damn detokenize really need fixing 
