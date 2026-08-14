@@ -48,7 +48,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 ds=load_dataset(
                     dataset_name ,
                     data_dir=dataset_dir,
-                    data_files=data_files
+                    data_files=data_files,
                     split="train",
                     )
             chunk_size=10000000
