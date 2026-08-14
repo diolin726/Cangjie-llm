@@ -431,7 +431,7 @@ if __name__=="__main__":
         print("Target shape" , target.shape )
         break
 
-    state_dict = torch.load("./cangjie_epoch_2_latest.pt",map_location = device)
+    state_dict = torch.load("./cangjie_epoch_3_latest.pt",map_location = device)
     model.load_state_dict(state_dict)
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr)
