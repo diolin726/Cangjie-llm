@@ -27,7 +27,7 @@ epochs = 100
 log_interval = 1000
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , block_size=256, cache_path=None):
+    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
         self.block_size = block_size
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
@@ -47,7 +47,9 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             else:
                 ds=load_dataset(
                     dataset_name ,
-                    data_dir=dataset_dir, split="train"
+                    data_dir=dataset_dir,
+                    data_files=data_files
+                    split="train",
                     )
             chunk_size=10000000
             chunk_tokens = []
@@ -415,7 +417,7 @@ if __name__=="__main__":
         [ 13,  23,  20,  26,  26]], dtype=torch.int16))) #676767
 
 
-    train_ds = CangjieDataset( dataset_name="zaibd/wikipedia-pretrain-zh-tw" ,dataset_dir="2605", block_size=block_size, cache_path="./cangjie_cached.pt")
+    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
 
     train_loader = DataLoader(train_ds,
                               batch_size,
