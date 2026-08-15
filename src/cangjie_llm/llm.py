@@ -148,6 +148,11 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         return x, target
 
 
+def collate_cangjie_batch(batch):
+    xs, targets = zip(*batch)
+    return torch.stack(xs, dim=0), torch.stack(targets, dim=0)
+
+
 class tokenizer():
     def __init__(self):
         self.decoder=cj_decoder()
@@ -566,6 +571,7 @@ if __name__=="__main__":
     train_loader = DataLoader(train_ds,
                               batch_size,
                               shuffle=True,
+                              collate_fn=collate_cangjie_batch,
                               num_workers=8,
                               pin_memory=True,
                               persistent_workers=True,
