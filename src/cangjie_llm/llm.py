@@ -142,8 +142,9 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
     def __getitem__(self, idx):
         idx = idx * self.block_size // 2
-        x = self.data[idx : idx + self.block_size]
-        target = self.target_ids[idx : idx + self.block_size]
+        # Return owned tensors so DataLoader workers can collate safely.
+        x = self.data[idx : idx + self.block_size].clone()
+        target = self.target_ids[idx : idx + self.block_size].clone()
         return x, target
 
 
