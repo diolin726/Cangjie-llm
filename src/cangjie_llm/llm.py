@@ -23,7 +23,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 48
+batch_size = 64
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -104,8 +104,8 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if self.target_cache_path:
                 torch.save(self.target_ids, self.target_cache_path)
                 print(f"已儲存 target id 快取: {self.target_cache_path}")
-         #self.data=self.data.to(torch.long)
-#        self.data.share_memory_()
+        #self.data=self.data.to(torch.long)
+        #self.data.share_memory_()
 
     @staticmethod
     def _get_target_cache_path(cache_path):
@@ -560,7 +560,7 @@ if __name__=="__main__":
         [ 13,  23,  20,  26,  26]], dtype=torch.int16))) #676767
 
 
-    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
+    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*", "cci2/00002*", "cci2/00003*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
 
     train_loader = DataLoader(train_ds,
                               batch_size,
@@ -583,6 +583,7 @@ if __name__=="__main__":
     for epoch in range(epochs):
         num_batches = len(train_loader)
         running_loss = 0.0
+        interval_steps = 0
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
             x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
@@ -595,15 +596,18 @@ if __name__=="__main__":
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+            interval_steps += 1
             if (step + 1) % log_interval == 0 or (step + 1) == num_batches:
                 progress = (step + 1) / num_batches * 100
-                avg_loss = running_loss / (step + 1)
+                avg_loss = running_loss / interval_steps
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"avg Loss: {avg_loss:.4f}"
                 )
                 save_checkpoint({k: v.cpu().clone() for k, v in model.state_dict().items()}, f"cangjie_epoch_{epoch+1}_latest.pt")
+                running_loss = 0.0
+                interval_steps = 0
 
     # a=tokenizer()
     # print(a.tokenize("我是abc123🥰："))
