@@ -443,7 +443,7 @@ if __name__=="__main__":
             x = x.to(torch.long).to(device)
             y = y.to(torch.long).to(device)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             with autocast(device_type='cuda', dtype=torch.bfloat16):
                 logits , loss = model(x , y )
 
