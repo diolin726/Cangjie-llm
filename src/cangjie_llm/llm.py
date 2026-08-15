@@ -271,15 +271,12 @@ class embedding(nn.Module):
         is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END) # B T
 
         non_cj_emb = all_emb[:, :, 0 , :] # (B ,T ,E)
-        if not is_cj.any():
-            return non_cj_emb
+        cj_emb = self.position(all_emb.flatten(2))
+        if cj_emb.dtype != non_cj_emb.dtype:
+            cj_emb = cj_emb.to(non_cj_emb.dtype)
 
-        output = non_cj_emb.clone()
-        cj_emb = self.position(all_emb[is_cj].reshape(-1, all_emb.size(2) * all_emb.size(3)))
-        if cj_emb.dtype != output.dtype:
-            cj_emb = cj_emb.to(output.dtype)
-        output[is_cj] = cj_emb
-        return output
+        is_cj = is_cj.unsqueeze(-1)
+        return torch.where(is_cj, cj_emb, non_cj_emb)
 
 
 class Head(nn.Module):
