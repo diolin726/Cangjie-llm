@@ -276,6 +276,8 @@ class embedding(nn.Module):
 
         output = non_cj_emb.clone()
         cj_emb = self.position(all_emb[is_cj].reshape(-1, all_emb.size(2) * all_emb.size(3)))
+        if cj_emb.dtype != output.dtype:
+            cj_emb = cj_emb.to(output.dtype)
         output[is_cj] = cj_emb
         return output
 
