@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from cangjie_converter import load_cangjie_dict, get_char_cangjie_tokens
-from cangjie_tokenizer import CJ_TOKEN_TO_ID
+from cangjie_tokenizer import CJ_TOKEN_TO_ID, BASE_VOCAB_SIZE
 
 class CangjieCosineDetokenizer:
     """
@@ -30,6 +30,17 @@ class CangjieCosineDetokenizer:
             device = next(model.parameters()).device
         self.device = device
 
+        cache_path = os.path.join(os.path.dirname(__file__), '.codebook_cache.pt')
+        if os.path.exists(cache_path):
+            try:
+                data = torch.load(cache_path, map_location=device)
+                self.codebook_norm = data['codebook_norm']
+                self.char_list = data.get('char_list', self.char_list)
+                print("從快取載入 codebook 矩陣。")
+                return
+            except Exception:
+                pass
+
         print(f"正在建構 65,176 個漢字的 768 維 Codebook 矩陣 (裝置: {device})...")
         
         cj_ids_list = []
@@ -39,15 +50,22 @@ class CangjieCosineDetokenizer:
             
         cj_ids_t = torch.tensor(cj_ids_list, dtype=torch.long, device=device)  # (65176, 5)
 
+        # 轉為相對索引 0..26
+        cj_indices = cj_ids_t - BASE_VOCAB_SIZE
+
         with torch.no_grad():
-            cj_embs = model.embedding.embedding(cj_ids_t)  # (65176, 5, 768)
+            cj_embs = model.embedding.cj_embedding(cj_indices)  # (65176, 5, 768)
             codebook_embs = torch.zeros(self.num_chars, model.config["hidden_dim"], device=device)
             for i in range(5):
                 codebook_embs += model.embedding.pos_projections[i](cj_embs[:, i, :])
                 
         # L2 正規化 (L2 Normalization)
         self.codebook_norm = F.normalize(codebook_embs, p=2, dim=-1)  # (65176, 768)
-        print("Codebook 建構完成！矩陣形狀:", self.codebook_norm.shape)
+        try:
+            torch.save({'codebook_norm': self.codebook_norm, 'char_list': self.char_list}, cache_path)
+            print(f"Codebook 建構完成並快取至 {cache_path} (矩陣形狀: {self.codebook_norm.shape})")
+        except Exception:
+            print("Codebook 建構完成，但無法寫入快取檔案。")
 
     def decode_vector(self, hidden_vector: torch.Tensor, top_k: int = 1, temperature: float = 1.0):
         """
@@ -94,9 +112,10 @@ if __name__ == '__main__':
     # 模擬輸入 "晶" 的 768 維向量
     jing_radicals = get_char_cangjie_tokens('晶', max_len=5)
     jing_ids = torch.tensor([[CJ_TOKEN_TO_ID[r] for r in jing_radicals]])
-    
+    jing_indices = jing_ids - BASE_VOCAB_SIZE
+
     with torch.no_grad():
-        jing_embs = model.embedding.embedding(jing_ids)
+        jing_embs = model.embedding.cj_embedding(jing_indices)
         simulated_vec = torch.zeros(1, 768)
         for i in range(5):
             simulated_vec += model.embedding.pos_projections[i](jing_embs[:, i, :])

@@ -20,7 +20,21 @@ def is_chinese_char(char: str) -> bool:
 
 class CangjieLlamaTokenizer:
     def __init__(self, tokenizer_json_path: str = 'pre-train-llama/tokenizer.json'):
-        self.base_tokenizer = Tokenizer.from_file(tokenizer_json_path)
+        try:
+            self.base_tokenizer = Tokenizer.from_file(tokenizer_json_path)
+        except Exception:
+            # fallback simple char-level tokenizer for offline testing
+            class SimpleBaseTokenizer:
+                def encode(self, text):
+                    # return a simple object with .ids as a list of ints
+                    ids = [ord(c) % BASE_VOCAB_SIZE for c in text]
+                    return type('Enc', (), {'ids': ids})
+                def decode(self, ids):
+                    try:
+                        return ''.join(chr(i) for i in ids)
+                    except Exception:
+                        return ''
+            self.base_tokenizer = SimpleBaseTokenizer()
         self.cj_token_to_id = CJ_TOKEN_TO_ID
         self.pad_cj_id = PAD_CJ_ID
         self.total_vocab_size = TOTAL_VOCAB_SIZE
@@ -81,6 +95,54 @@ class CangjieLlamaTokenizer:
         cangjie_ids_t = torch.tensor(cangjie_ids, dtype=torch.long)
 
         return standard_ids_t, is_chinese_mask_t, cangjie_ids_t
+
+    # --- Incremental / cached encoding helpers ---
+    class TokenizerCache:
+        """A small helper to cache encoded tensors and append tokens incrementally."""
+        def __init__(self, tokenizer: 'CangjieLlamaTokenizer', max_seq_len: int = 512, add_eos: bool = True):
+            self.tokenizer = tokenizer
+            self.max_seq_len = max_seq_len
+            self.add_eos = add_eos
+            self.std_ids = []
+            self.is_chinese = []
+            self.cj_ids = []
+
+        @classmethod
+        def from_text(cls, tokenizer: 'CangjieLlamaTokenizer', text: str, max_seq_len: int = 512, add_eos: bool = True):
+            inst = cls(tokenizer, max_seq_len, add_eos)
+            std, mask, cj = tokenizer.encode(text, max_seq_len=max_seq_len, add_eos=add_eos)
+            inst.std_ids = std.tolist()
+            inst.is_chinese = mask.tolist()
+            inst.cj_ids = [row.tolist() for row in cj.tolist()]
+            return inst
+
+        def to_tensors(self):
+            import torch
+            return (torch.tensor(self.std_ids, dtype=torch.long),
+                    torch.tensor(self.is_chinese, dtype=torch.bool),
+                    torch.tensor(self.cj_ids, dtype=torch.long))
+
+        def append_bpe_id(self, bpe_id: int):
+            # append a BPE id (non-Chinese)
+            if len(self.std_ids) >= self.max_seq_len:
+                raise IndexError("tokenizer cache reached max_seq_len")
+            self.std_ids.append(int(bpe_id))
+            self.is_chinese.append(False)
+            self.cj_ids.append([self.tokenizer.pad_cj_id] * 5)
+
+        def append_chinese_char(self, char: str):
+            # append a chinese char by converting to cangjie ids
+            if len(self.std_ids) >= self.max_seq_len:
+                raise IndexError("tokenizer cache reached max_seq_len")
+            self.std_ids.append(0)
+            self.is_chinese.append(True)
+            radicals = get_char_cangjie_tokens(char, max_len=5)
+            cj_ids = [self.tokenizer.cj_token_to_id[r] for r in radicals]
+            self.cj_ids.append(cj_ids)
+
+        def append_eos(self):
+            if self.add_eos and len(self.std_ids) < self.max_seq_len:
+                self.append_bpe_id(1)
 
 
 if __name__ == '__main__':

@@ -107,8 +107,9 @@ def train(args):
             for p in proj.parameters():
                 p.requires_grad = True
                 
-        # 解凍新增的 27 個倉頡 Token 的 Embedding 權重
-        model.embedding.embedding.weight.requires_grad = True
+        # 解凍新增的 27 個倉頡 Token 的 Embedding 權重（cj_embedding）
+        for p in model.embedding.cj_embedding.parameters():
+            p.requires_grad = True
         
     else:
         print("\n=== [階段 2]: 全模型端到端聯合微調 (Joint LLM & Tokenizer Training) ===")

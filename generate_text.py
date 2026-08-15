@@ -1,11 +1,13 @@
 import torch
 import torch.nn.functional as F
+from contextlib import nullcontext
 from cangjie_converter import get_char_cangjie_tokens
 from cangjie_tokenizer import CangjieLlamaTokenizer, CJ_TOKEN_TO_ID, is_chinese_char
 from cangjie_detokenizer import CangjieCosineDetokenizer
+from cangjie_tokenizer import CangjieLlamaTokenizer as _TokClass
 
 
-from modeling_cangjie_llama import CangjieTextGenerationModel, TOTAL_VOCAB_SIZE
+from modeling_cangjie_llama import CangjieTextGenerationModel, TOTAL_VOCAB_SIZE, create_causal_mask
 
 def generate_autoregressive(model, tokenizer, detokenizer, prompt, max_new_tokens=40, temperature=0.7, device='cuda'):
     """
@@ -14,52 +16,76 @@ def generate_autoregressive(model, tokenizer, detokenizer, prompt, max_new_token
     
     中文字解碼：採用構想 C (餘弦相似度矩陣匹配 Cosine Similarity Retrieval)
     """
-    current_text = prompt
-    print(f"\n[初始 Prompt]: '{prompt}'")
-    
-    for step in range(max_new_tokens):
-        # 1. 將當前累積的文字進行雙軌 Encoding
-        std_ids, mask, cj_ids = tokenizer.encode(current_text)
-        
-        std_ids_t = std_ids.unsqueeze(0).to(device)
-        mask_t = mask.unsqueeze(0).to(device)
-        cj_ids_t = cj_ids.unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            # 2. Forward Pass: 獲取最後一個 Step 的 768 維 H_last 隱層向量與 Logits
+    # Use TokenizerCache to avoid re-encoding entire prompt every step
+    cache = tokenizer.TokenizerCache.from_text(tokenizer, prompt)
+    std_ids_t, mask_t, cj_ids_t = cache.to_tensors()
+    std_ids_t = std_ids_t.unsqueeze(0).to(device)
+    mask_t = mask_t.unsqueeze(0).to(device)
+    cj_ids_t = cj_ids_t.unsqueeze(0).to(device)
+
+    print(f"\n[初始 Prompt]: '{prompt}' (len={std_ids_t.shape[1]})")
+
+    # First full pass to obtain initial hidden states and logits
+    with torch.no_grad():
+        amp = torch.cuda.amp.autocast if hasattr(torch.cuda.amp, 'autocast') else nullcontext
+        with amp(enabled=(device.startswith('cuda'))):
             x = model.embedding(std_ids_t, mask_t, cj_ids_t)
             seq_len = std_ids_t.shape[1]
-            causal_mask = model.rope.cos.new_ones(seq_len, seq_len, dtype=torch.bool).tril().unsqueeze(0)
-            
+            causal_mask = create_causal_mask(seq_len, std_ids_t.device).unsqueeze(0)
             for decoder in model.decoders:
                 x = decoder(x, causal_mask, model.rope)
             x = model.norm(x)
-            
-            # 取最後一個位置的 768 維隱層向量 H_last
-            h_last = x[0, -1, :]  # (768,)
-            
-            # 同時獲取原標準 10,027 Logits (前 10,000 個為標準 BPE Token)
-            logits_last = model.out(x)[0, -1, :]  # (10027,)
+            logits = model.out(x)
 
-        # 3. 判斷下一個預測 Token 種類：
-        # 如果標準 Logits 在英文/標點 (前 10,000) 的最大概率明顯高於倉頡範圍，選擇 BPE Token
+    generated = ''
+    # keep past_hidden for incremental updates
+    past_hidden = x  # (B, L, H)
+
+    for step in range(max_new_tokens):
+        # compute logits for last token from past_hidden
+        logits_last = model.out(past_hidden)[0, -1, :]
+
         bpe_logits = logits_last[:10000]
-        max_bpe_prob = F.softmax(bpe_logits / temperature, dim=-1).max().item()
+        probs = F.softmax(bpe_logits / temperature, dim=-1)
+        max_bpe_prob = probs.max().item()
 
-        if max_bpe_prob > 0.6:  # 生成英文 / 數字 / 標點
-            probs = F.softmax(bpe_logits / temperature, dim=-1)
+        if max_bpe_prob > 0.6:
             next_bpe_id = torch.multinomial(probs, num_samples=1).item()
-            if next_bpe_id == 1:  # [eos]
-                print("遇到 [eos] 終止符，生成結束。")
+            if next_bpe_id == 1:
                 break
             next_char = tokenizer.base_tokenizer.decode([next_bpe_id])
+            cache.append_bpe_id(next_bpe_id)
         else:
-            # 使用構想 C：透過 768 維向量 H_last 與 65,176 Codebook 進行餘弦相似度匹配，獲得下一個中文字！
+            # detokenize using last hidden vector
+            h_last = past_hidden[0, -1, :]
             next_char = detokenizer.decode_vector(h_last, temperature=temperature)
-            
-        current_text += next_char
+            cache.append_chinese_char(next_char)
 
-    return current_text
+        # incremental: compute new embedding for just the appended token
+        std_ids_t2, mask_t2, cj_ids_t2 = cache.to_tensors()
+        # get the last token tensors
+        last_std = std_ids_t2[-1:].unsqueeze(0).to(device)  # (1,1)
+        last_mask = mask_t2[-1:].unsqueeze(0).to(device)
+        last_cj = cj_ids_t2[-1:].unsqueeze(0).to(device)  # (1,1,5)
+
+        with torch.no_grad():
+            with amp(enabled=(device.startswith('cuda'))):
+                new_emb = model.embedding(last_std, last_mask, last_cj)  # (1,1,H)
+                # run each decoder in cache mode on the new token
+                new_h = new_emb
+                for decoder in model.decoders:
+                    # decoder accepts use_cache flag in fallback implementation
+                    try:
+                        new_h = decoder(new_h, None, model.rope, use_cache=True)
+                    except TypeError:
+                        new_h = decoder(new_h, None, model.rope)
+                new_h = model.norm(new_h)
+
+        # append new_h to past_hidden
+        past_hidden = torch.cat([past_hidden, new_h], dim=1)
+        generated += next_char
+
+    return prompt + generated
 
 if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
