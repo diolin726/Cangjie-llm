@@ -23,7 +23,7 @@ print( f"using {device}" )
 dropout=0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 64
+batch_size = 128
 block_size = 256
 n_head = 12
 n_layer = 12
@@ -94,7 +94,22 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         if self.target_cache_path and os.path.exists(self.target_cache_path):
             print(f"從快取載入 target ids: {self.target_cache_path}")
             self.target_ids = torch.load(self.target_cache_path, weights_only=True)
+            print(
+                f"target ids 載入完成: shape={self.target_ids.shape}, "
+                f"記憶體={self.target_ids.element_size() * self.target_ids.nelement() / 1024**3:.2f} GB"
+            )
         else:
+            self.target_ids = None
+
+        expected_target_len = len(self.data) - 1
+        if self.target_ids is not None and len(self.target_ids) != expected_target_len:
+            print(
+                f"target ids 快取長度不符，預期 {expected_target_len}，"
+                f"實際 {len(self.target_ids)}，將重新建立"
+            )
+            self.target_ids = None
+
+        if self.target_ids is None:
             print("建立 target id 快取...")
             self.target_ids = self._build_target_ids()
             print(
@@ -138,7 +153,8 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         return sorted_indices[pos].to(torch.int16)
 
     def __len__(self):
-        return (len(self.data) - self.block_size ) * 2 // self.block_size
+        usable_len = min(len(self.data), len(self.target_ids))
+        return max(0, (usable_len - self.block_size) * 2 // self.block_size)
 
     def __getitem__(self, idx):
         idx = idx * self.block_size // 2
@@ -498,6 +514,16 @@ def save_checkpoint( state_dict , save_path ):
     thread.start()
 
 
+def load_checkpoint(load_path, map_location):
+    state_dict = torch.load(load_path, map_location=map_location)
+    if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
+        state_dict = {
+            key.removeprefix("_orig_mod."): value
+            for key, value in state_dict.items()
+        }
+    return state_dict
+
+
 def create_optimizer(model):
     if device == "cuda":
         try:
@@ -581,7 +607,7 @@ if __name__=="__main__":
         print("Target shape" , target.shape )  # torch.Size([32, 256])
         break
 
-    state_dict = torch.load("./cangjie_epoch_2_latest.pt", map_location=device)
+    state_dict = load_checkpoint("./cangjie_epoch_2_latest.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
     model = maybe_compile_model(model)
