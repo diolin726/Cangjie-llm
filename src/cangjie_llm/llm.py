@@ -468,6 +468,7 @@ if __name__=="__main__":
     model.train()
     for epoch in range(epochs):
         num_batches = len(train_loader)
+        running_loss = 0.0
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
             x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
@@ -479,12 +480,14 @@ if __name__=="__main__":
 
             loss.backward()
             optimizer.step()
+            running_loss += loss.item()
             if (step + 1) % log_interval == 0 or (step + 1) == num_batches:
                 progress = (step + 1) / num_batches * 100
+                avg_loss = running_loss / (step + 1)
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
-                    f"current Loss: {loss.item():.4f}"
+                    f"avg Loss: {avg_loss:.4f}"
                 )
                 save_checkpoint({k: v.cpu().clone() for k, v in model.state_dict().items()}, f"cangjie_epoch_{epoch+1}_latest.pt")
 
