@@ -30,6 +30,8 @@ n_layer = 12
 lr = 3e-4
 epochs = 100
 log_interval = 1000
+enable_torch_compile = (device == "cuda")
+torch_compile_mode = "default"
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
@@ -311,13 +313,33 @@ class Mutihead(nn.Module):
         self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
         self.proj = nn.Linear( head_size * n_head , embed_size , bias = False )
         self.dropout = nn.Dropout(dropout)
+        self.register_buffer('_packed_qkv_weight', torch.empty(0), persistent=False)
+        self._packed_qkv_versions = None
+
+    def _get_packed_qkv_weight(self):
+        current_versions = tuple(
+            weight._version
+            for head in self.heads
+            for weight in (head.query.weight, head.key.weight, head.value.weight)
+        )
+        first_weight = self.heads[0].query.weight
+        needs_refresh = (
+            self._packed_qkv_weight.numel() == 0
+            or self._packed_qkv_versions != current_versions
+            or self._packed_qkv_weight.device != first_weight.device
+            or self._packed_qkv_weight.dtype != first_weight.dtype
+        )
+        if needs_refresh:
+            q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
+            k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
+            v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
+            self._packed_qkv_weight = torch.cat((q_weight, k_weight, v_weight), dim=0)
+            self._packed_qkv_versions = current_versions
+        return self._packed_qkv_weight
 
     def forward( self ,x ):
         B, T, _ = x.shape
-        q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
-        k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
-        v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
-        qkv = F.linear(x, torch.cat((q_weight, k_weight, v_weight), dim=0))
+        qkv = F.linear(x, self._get_packed_qkv_weight())
         q, k, v = qkv.split(self.n_head * self.head_size, dim=-1)
 
         q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)
@@ -473,6 +495,21 @@ def create_optimizer(model):
             pass
     return torch.optim.AdamW(model.parameters(), lr)
 
+
+def maybe_compile_model(model):
+    if not enable_torch_compile:
+        return model
+    if not hasattr(torch, "compile"):
+        print("torch.compile 不可用，使用 eager mode")
+        return model
+    try:
+        compiled_model = torch.compile(model, mode=torch_compile_mode)
+        print(f"torch.compile 已啟用: mode={torch_compile_mode}")
+        return compiled_model
+    except Exception as exc:
+        print(f"torch.compile 啟用失敗，退回 eager mode: {exc}")
+        return model
+
 if __name__=="__main__":
     model = LLM()
     total_params = sum(p.numel() for p in model.parameters())
@@ -535,6 +572,7 @@ if __name__=="__main__":
     state_dict = torch.load("./cangjie_epoch_2_latest.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
+    model = maybe_compile_model(model)
     optimizer = create_optimizer(model)
     model.train()
     for epoch in range(epochs):
