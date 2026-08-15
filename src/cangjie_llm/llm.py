@@ -34,6 +34,7 @@ log_interval = 1000
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
         self.block_size = block_size
+        self.target_cache_path = self._get_target_cache_path(cache_path)
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
             self.data = torch.load(cache_path, weights_only=True) #.to(torch.long)
@@ -87,15 +88,60 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if cache_path:
                 torch.save(self.data, cache_path)
                 print(f"已儲存快取: {cache_path}")
+
+        if self.target_cache_path and os.path.exists(self.target_cache_path):
+            print(f"從快取載入 target ids: {self.target_cache_path}")
+            self.target_ids = torch.load(self.target_cache_path, weights_only=True)
+        else:
+            print("建立 target id 快取...")
+            self.target_ids = self._build_target_ids()
+            print(
+                f"target ids 完成: shape={self.target_ids.shape}, "
+                f"記憶體={self.target_ids.element_size() * self.target_ids.nelement() / 1024**3:.2f} GB"
+            )
+            if self.target_cache_path:
+                torch.save(self.target_ids, self.target_cache_path)
+                print(f"已儲存 target id 快取: {self.target_cache_path}")
          #self.data=self.data.to(torch.long)
 #        self.data.share_memory_()
+
+    @staticmethod
+    def _get_target_cache_path(cache_path):
+        if cache_path is None:
+            return None
+        root, ext = os.path.splitext(cache_path)
+        return f"{root}_target_ids{ext or '.pt'}"
+
+    def _build_target_ids(self):
+        tok = tokenizer()
+        codes = tok.all_vocab().to(torch.long)
+        hashes = (
+            (codes[:, 0] << 36) |
+            (codes[:, 1] << 27) |
+            (codes[:, 2] << 18) |
+            (codes[:, 3] << 9)  |
+            codes[:, 4]
+        )
+        sorted_hashes, sorted_indices = torch.sort(hashes)
+
+        target_long = self.data[1:].to(torch.long)
+        target_hash = (
+            (target_long[:, 0] << 36) |
+            (target_long[:, 1] << 27) |
+            (target_long[:, 2] << 18) |
+            (target_long[:, 3] << 9)  |
+            target_long[:, 4]
+        )
+        pos = torch.searchsorted(sorted_hashes, target_hash)
+        return sorted_indices[pos].to(torch.int16)
+
     def __len__(self):
         return (len(self.data) - self.block_size ) * 2 // self.block_size
 
     def __getitem__(self, idx):
         idx = idx * self.block_size // 2
         x = self.data[idx : idx + self.block_size]
-        target = self.data[idx + 1: idx + self.block_size + 1]
+        target = self.target_ids[idx : idx + self.block_size]
         return x, target
 
 
@@ -218,15 +264,17 @@ class embedding(nn.Module):
 
     def forward(self, x): # x= B , T , 5
 
-        all_emb = self.token_emb(x)                          # B T 5 E
+        all_emb = self.token_emb(x) # B T 5 E
         first_id = x[:,:,0]
         is_cj = (first_id >= self.CJ_START) & (first_id <= self.CJ_END) # B T
 
-        non_cj_emb = all_emb[:, :, 0 , :]                             # (B ,T ,E)
-        cj_emb = self.position( all_emb.flatten(2) )#(B ,T, E)
+        non_cj_emb = all_emb[:, :, 0 , :] # (B ,T ,E)
+        if not is_cj.any():
+            return non_cj_emb
 
-        is_cj = is_cj.unsqueeze(-1)
-        output = torch.where(is_cj, cj_emb, non_cj_emb)
+        output = non_cj_emb.clone()
+        cj_emb = self.position(all_emb[is_cj].reshape(-1, all_emb.size(2) * all_emb.size(3)))
+        output[is_cj] = cj_emb
         return output
 
 
@@ -266,13 +314,15 @@ class Mutihead(nn.Module):
 
     def forward( self ,x ):
         B, T, _ = x.shape
-        q_weight = torch.stack([head.query.weight for head in self.heads], dim=0)
-        k_weight = torch.stack([head.key.weight for head in self.heads], dim=0)
-        v_weight = torch.stack([head.value.weight for head in self.heads], dim=0)
+        q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
+        k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
+        v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
+        qkv = F.linear(x, torch.cat((q_weight, k_weight, v_weight), dim=0))
+        q, k, v = qkv.split(self.n_head * self.head_size, dim=-1)
 
-        q = F.linear(x, q_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
-        k = F.linear(x, k_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
-        v = F.linear(x, v_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
 
         out = F.scaled_dot_product_attention(
             q, k, v,
@@ -320,6 +370,13 @@ class cj_head(nn.Module):
         tok = tokenizer()
         codes = tok.all_vocab()  # (13228, 5)
         self.register_buffer('output_codes', codes)
+        cj_start = tok.vocab['cj_a']
+        cj_end = tok.vocab['cj_z']
+        is_cj_output = (codes[:, 0] >= cj_start) & (codes[:, 0] <= cj_end)
+        self.register_buffer('non_cj_output_indices', torch.nonzero(~is_cj_output, as_tuple=False).squeeze(1), persistent=False)
+        self.register_buffer('cj_output_indices', torch.nonzero(is_cj_output, as_tuple=False).squeeze(1), persistent=False)
+        self.register_buffer('non_cj_output_ids', codes[~is_cj_output, 0].to(torch.long), persistent=False)
+        self.register_buffer('cj_output_codes', codes[is_cj_output].to(torch.long), persistent=False)
         codes_long = codes.to(torch.long)
         hashes = (
             (codes_long[:, 0] << 36) |
@@ -348,7 +405,18 @@ class cj_head(nn.Module):
 
     def forward(self, hidden):
         # hidden: (B , E) -> logits: (B, 13228)
-        output_emb = self.emb_layer(self.output_codes.unsqueeze(1)).squeeze(1) # [13228 , E]
+        token_weight = self.emb_layer.token_emb.weight
+        output_emb = token_weight.new_empty((self.output_codes.size(0), token_weight.size(1)))
+
+        if self.non_cj_output_ids.numel() > 0:
+            non_cj_emb = F.embedding(self.non_cj_output_ids, token_weight)
+            output_emb.index_copy_(0, self.non_cj_output_indices, non_cj_emb)
+
+        if self.cj_output_codes.numel() > 0:
+            cj_token_emb = F.embedding(self.cj_output_codes, token_weight).flatten(1)
+            cj_emb = self.emb_layer.position(cj_token_emb)
+            output_emb.index_copy_(0, self.cj_output_indices, cj_emb)
+
         return hidden @ output_emb.T
 
 
@@ -380,7 +448,10 @@ class LLM(nn.Module):
 
         loss = None
         if target is not None:
-            target_idx = self.head.input_to_output_idx(target) # [B ]
+            if target.dim() == 2:
+                target_idx = target.to(torch.long)
+            else:
+                target_idx = self.head.input_to_output_idx(target) # [B ]
             loss = F.cross_entropy(logits.view(-1, 13228), target_idx.view(-1))
 
         return logits, loss
@@ -458,10 +529,10 @@ if __name__=="__main__":
                               prefetch_factor=4)
     for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
-        print("Target shape" , target.shape )
+        print("Target shape" , target.shape )  # torch.Size([32, 256])
         break
 
-    state_dict = torch.load("./cangjie_epoch_3_latest.pt", map_location=device)
+    state_dict = torch.load("./cangjie_epoch_2_latest.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
     optimizer = create_optimizer(model)
