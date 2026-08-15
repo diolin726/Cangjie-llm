@@ -1,16 +1,15 @@
-import json
-from pathlib import Path
+from ._shared import load_cj_assets
+
+
 class cj_encoder:
     def __init__(self , vocab_size):
         self.vocab_size = vocab_size
         self.make_vocab()
-        with open(Path(__file__).resolve().parent / "cj5.json", "r", encoding="utf-8") as f:
-            self.data_map = json.load(f)
-        cj_keys = []
-        for key in self.data_map:
-            cj_keys.append(self.data_map[key])
-        cj_keys = list(set(cj_keys))
-        self.reversed_cj_key = {key: i for i, key in enumerate(cj_keys)}
+        self.data_map, _, self.reversed_cj_key, _, self.encoded_tokens = load_cj_assets()
+        self.char_to_output_id = {
+            char: self.reversed_cj_key[key] + self.vocab_size - 26
+            for char, key in self.data_map.items()
+        }
 
     def make_vocab(self):
         self.vocab={}
@@ -33,24 +32,13 @@ class cj_encoder:
             self.id_to_vocab.append(byte_token)
 
     def encode(self, s):
-        ans=[]
-        for token in s:
-            if (token not in self.data_map):
-                ans.append([token])
-            else:
-                tmp = ["cj_"+t for t in self.data_map[token] ]
-                while len(tmp) < 5:
-                    tmp.append("[PAD]")
-                ans.append(tmp)
-        return ans
+        encoded_tokens = self.encoded_tokens
+        return [encoded_tokens.get(token, [token]) for token in s]
+
     def encode_to_id(self , text): # Warning!! only when input are in token table
-        ans = []
-        for token in text:
-            if token in self.data_map:
-                ans.append(  self.reversed_cj_key[self.data_map[token]] + self.vocab_size -26 )
-            else:
-                ans.append( self.vocab[ token ] -26 )
-        return ans
+        char_to_output_id = self.char_to_output_id
+        vocab = self.vocab
+        return [char_to_output_id.get(token, vocab[token] - 26) for token in text]
 
 if __name__ == '__main__':
     e = cj_encoder()

@@ -1,30 +1,17 @@
-import json
-from pathlib import Path
+from ._shared import load_cj_assets
+
+
 class cj_decoder:
     def __init__(self):
-        with open(Path(__file__).resolve().parent / "cj5.json", "r", encoding="utf-8") as f:
-            self.data_map = json.load(f)
-
-        self.cj_keys = []
-        self.cj_decodemap={}
-        for key in self.data_map:
-            self.cj_keys.append(self.data_map[key])
-            if self.data_map[key] not in self.cj_decodemap:
-                self.cj_decodemap[self.data_map[key]] = []
-            self.cj_decodemap[self.data_map[key]].append(key)
-        #print(self.cj_decodemap)
-
-        self.cj_keys = list(set(self.cj_keys))
+        self.data_map, self.cj_keys, _, self.cj_decodemap, _ = load_cj_assets()
 
     def decode(self, s): # input a char [ 'cj_a', 'cj_b', '[PAD]' , '[PAD]' , '[PAD]' ]
-        key = ''
-        for t in s:
-            t = t[3]
-            if 'a'<= t <= 'z':
-                key = key + t
-            #print(key)
-
-        return self.cj_decodemap[key]
+        key_parts = []
+        for token in s:
+            token = token[3]
+            if 'a'<= token <= 'z':
+                key_parts.append(token)
+        return self.cj_decodemap["".join(key_parts)]
 
     def id_decode(self, idx):
         return self.cj_decodemap[self.cj_keys[idx]]

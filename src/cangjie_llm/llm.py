@@ -13,6 +13,11 @@ import threading
 torch.manual_seed(67) #676767
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+
 print( f"using {device}" )
 
 dropout=0.1
@@ -253,12 +258,28 @@ class Head(nn.Module):
 class Mutihead(nn.Module):
     def __init__(self , n_head , head_size , embed_size ):
         super().__init__()
+        self.n_head = n_head
+        self.head_size = head_size
         self.heads = nn.ModuleList([Head( head_size ) for _ in range(n_head)])
         self.proj = nn.Linear( head_size * n_head , embed_size , bias = False )
         self.dropout = nn.Dropout(dropout)
 
     def forward( self ,x ):
-        out = torch.cat([ h(x) for h in self.heads ], dim=-1)
+        B, T, _ = x.shape
+        q_weight = torch.stack([head.query.weight for head in self.heads], dim=0)
+        k_weight = torch.stack([head.key.weight for head in self.heads], dim=0)
+        v_weight = torch.stack([head.value.weight for head in self.heads], dim=0)
+
+        q = F.linear(x, q_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        k = F.linear(x, k_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        v = F.linear(x, v_weight.reshape(-1, embed_size)).view(B, T, self.n_head, self.head_size).transpose(1, 2)
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            is_causal=True,
+            dropout_p=dropout if self.training else 0.0
+        )
+        out = out.transpose(1, 2).contiguous().view(B, T, self.n_head * self.head_size)
         out = self.proj(out)
         out = self.dropout(out )
         return out
@@ -369,8 +390,17 @@ def save_checkpoint( state_dict , save_path ):
     def _save():
         torch.save(state_dict , save_path )
         print(f"saved to {save_path}")
-    thread = threading.Thread(target = _save() ,daemon=True)
+    thread = threading.Thread(target=_save, daemon=True)
     thread.start()
+
+
+def create_optimizer(model):
+    if device == "cuda":
+        try:
+            return torch.optim.AdamW(model.parameters(), lr, fused=True)
+        except TypeError:
+            pass
+    return torch.optim.AdamW(model.parameters(), lr)
 
 if __name__=="__main__":
     model = LLM()
@@ -431,17 +461,17 @@ if __name__=="__main__":
         print("Target shape" , target.shape )
         break
 
-    state_dict = torch.load("./cangjie_epoch_3_latest.pt",map_location = device)
+    state_dict = torch.load("./cangjie_epoch_3_latest.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr)
+    optimizer = create_optimizer(model)
     model.train()
     for epoch in range(epochs):
         num_batches = len(train_loader)
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
-            x = x.to(torch.long).to(device)
-            y = y.to(torch.long).to(device)
+            x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
+            y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
 
             optimizer.zero_grad(set_to_none=True)
             with autocast(device_type='cuda', dtype=torch.bfloat16):
