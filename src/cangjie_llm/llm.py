@@ -316,6 +316,12 @@ class Mutihead(nn.Module):
         self._packed_qkv_versions = None
 
     def _get_packed_qkv_weight(self):
+        if self.training and torch.is_grad_enabled():
+            q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
+            k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
+            v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
+            return torch.cat((q_weight, k_weight, v_weight), dim=0)
+
         current_versions = tuple(
             weight._version
             for head in self.heads
@@ -332,7 +338,7 @@ class Mutihead(nn.Module):
             q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
             k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
             v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
-            self._packed_qkv_weight = torch.cat((q_weight, k_weight, v_weight), dim=0)
+            self._packed_qkv_weight = torch.cat((q_weight, k_weight, v_weight), dim=0).detach()
             self._packed_qkv_versions = current_versions
         return self._packed_qkv_weight
 
