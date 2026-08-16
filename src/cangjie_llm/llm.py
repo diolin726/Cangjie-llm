@@ -11,14 +11,15 @@ from torch.amp import autocast
 import threading
 
 torch.manual_seed(67) #676767
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+device = 'cuda' if gpu_count > 0 else 'cpu'
 
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
 
-print( f"using {device}" )
+print(f"using {device} ({gpu_count} GPU{'s' if gpu_count != 1 else ''} visible)")
 
 dropout=0.1
 embed_size = 384
@@ -30,7 +31,7 @@ n_layer = 12
 lr = 3e-4
 epochs = 100
 log_interval = 1000
-enable_torch_compile = (device == "cuda")
+enable_torch_compile = (device == "cuda" and gpu_count <= 1)
 torch_compile_mode = "default"
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
@@ -516,12 +517,21 @@ def save_checkpoint( state_dict , save_path ):
 
 def load_checkpoint(load_path, map_location):
     state_dict = torch.load(load_path, map_location=map_location)
-    if any(key.startswith("_orig_mod.") for key in state_dict.keys()):
-        state_dict = {
-            key.removeprefix("_orig_mod."): value
-            for key, value in state_dict.items()
-        }
-    return state_dict
+    normalized_state_dict = {}
+    for key, value in state_dict.items():
+        while key.startswith("_orig_mod.") or key.startswith("module."):
+            if key.startswith("_orig_mod."):
+                key = key.removeprefix("_orig_mod.")
+            if key.startswith("module."):
+                key = key.removeprefix("module.")
+        normalized_state_dict[key] = value
+    return normalized_state_dict
+
+
+def unwrap_model(model):
+    while hasattr(model, "module"):
+        model = model.module
+    return model
 
 
 def create_optimizer(model):
@@ -533,8 +543,18 @@ def create_optimizer(model):
     return torch.optim.AdamW(model.parameters(), lr)
 
 
+def maybe_enable_multi_gpu(model):
+    if gpu_count <= 1:
+        return model
+    device_ids = list(range(gpu_count))
+    print(f"啟用 DataParallel: GPUs={device_ids}")
+    return nn.DataParallel(model, device_ids=device_ids)
+
+
 def maybe_compile_model(model):
     if not enable_torch_compile:
+        if device == "cuda" and gpu_count > 1:
+            print("多 GPU 模式下停用 torch.compile，避免與 DataParallel 衝突")
         return model
     if not hasattr(torch, "compile"):
         print("torch.compile 不可用，使用 eager mode")
@@ -610,6 +630,7 @@ if __name__=="__main__":
     state_dict = load_checkpoint("./cangjie_epoch_2_latest.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
+    model = maybe_enable_multi_gpu(model)
     model = maybe_compile_model(model)
     optimizer = create_optimizer(model)
     model.train()
@@ -623,8 +644,10 @@ if __name__=="__main__":
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
 
             optimizer.zero_grad(set_to_none=True)
-            with autocast(device_type='cuda', dtype=torch.bfloat16):
+            with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=(device == "cuda")):
                 logits , loss = model(x , y )
+            if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+                loss = loss.mean()
 
             loss.backward()
             optimizer.step()
@@ -638,7 +661,10 @@ if __name__=="__main__":
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"avg Loss: {avg_loss:.4f}"
                 )
-                save_checkpoint({k: v.cpu().clone() for k, v in model.state_dict().items()}, f"cangjie_epoch_{epoch+1}_latest.pt")
+                save_checkpoint(
+                    {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
+                    f"cangjie_epoch_{epoch+1}_latest.pt"
+                )
                 running_loss = 0.0
                 interval_steps = 0
 
