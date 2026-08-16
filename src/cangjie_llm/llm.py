@@ -11,17 +11,9 @@ from torch.amp import autocast
 import threading
 
 torch.manual_seed(67) #676767
-gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-device = 'cuda' if gpu_count > 0 else 'cpu'
 
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.set_float32_matmul_precision("high")
-
-print(f"using {device} ({gpu_count} GPU{'s' if gpu_count != 1 else ''} visible)")
-
-dropout=0.1
+# ===== 可調參數 =====
+dropout = 0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
 batch_size = 128
@@ -31,8 +23,27 @@ n_layer = 12
 lr = 3e-4
 epochs = 100
 log_interval = 1000
-enable_torch_compile = (device == "cuda" and gpu_count <= 1)
+checkpoint_interval = 1000
 torch_compile_mode = "default"
+
+gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+device = 'cuda' if gpu_count > 0 else 'cpu'
+use_bf16_autocast = device == "cuda" and torch.cuda.is_bf16_supported()
+enable_torch_compile = (device == "cuda" and gpu_count <= 1)
+
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+
+print(f"using {device} ({gpu_count} GPU{'s' if gpu_count != 1 else ''} visible)")
+if device == "cuda":
+    print(f"bf16 autocast: {'enabled' if use_bf16_autocast else 'disabled'}")
+    print(f"flash sdp: {torch.backends.cuda.flash_sdp_enabled()}")
+    print(f"mem efficient sdp: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
+    print(f"math sdp fallback: {torch.backends.cuda.math_sdp_enabled()}")
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
@@ -644,7 +655,7 @@ if __name__=="__main__":
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
 
             optimizer.zero_grad(set_to_none=True)
-            with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=(device == "cuda")):
+            with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
                 logits , loss = model(x , y )
             if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                 loss = loss.mean()
@@ -653,7 +664,9 @@ if __name__=="__main__":
             optimizer.step()
             running_loss += loss.item()
             interval_steps += 1
-            if (step + 1) % log_interval == 0 or (step + 1) == num_batches:
+            is_log_step = (step + 1) % log_interval == 0 or (step + 1) == num_batches
+            is_checkpoint_step = (step + 1) % checkpoint_interval == 0 or (step + 1) == num_batches
+            if is_log_step:
                 progress = (step + 1) / num_batches * 100
                 avg_loss = running_loss / interval_steps
                 print(
@@ -661,12 +674,13 @@ if __name__=="__main__":
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"avg Loss: {avg_loss:.4f}"
                 )
+                running_loss = 0.0
+                interval_steps = 0
+            if is_checkpoint_step:
                 save_checkpoint(
                     {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
                     f"cangjie_epoch_{epoch+1}_latest.pt"
                 )
-                running_loss = 0.0
-                interval_steps = 0
 
     # a=tokenizer()
     # print(a.tokenize("我是abc123🥰："))
