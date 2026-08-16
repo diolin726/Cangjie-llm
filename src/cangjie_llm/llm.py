@@ -6,6 +6,7 @@ import unicodedata
 import numpy as np
 import os
 import math
+import time
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder , cj_decoder
 from torch.amp import autocast
@@ -24,7 +25,7 @@ n_layer = 12
 lr = 4e-4
 min_lr = 4e-5
 warmup_steps = 2000
-epochs = 100
+epochs = 10
 log_interval = 1000
 checkpoint_interval = 1000
 torch_compile_mode = "default"
@@ -661,6 +662,7 @@ if __name__=="__main__":
         num_batches = len(train_loader)
         running_loss = 0.0
         interval_steps = 0
+        interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
             global_step = epoch * num_batches + step
@@ -684,16 +686,20 @@ if __name__=="__main__":
             is_log_step = (step + 1) % log_interval == 0 or (step + 1) == num_batches
             is_checkpoint_step = (step + 1) % checkpoint_interval == 0 or (step + 1) == num_batches
             if is_log_step:
+                elapsed = time.perf_counter() - interval_start_time
+                steps_per_sec = interval_steps / elapsed if elapsed > 0 else 0.0
                 progress = (step + 1) / num_batches * 100
                 avg_loss = running_loss / interval_steps
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"avg Loss: {avg_loss:.4f} | "
-                    f"lr: {current_lr:.2e}"
+                    f"lr: {current_lr:.2e} | "
+                    f"steps/s: {steps_per_sec:.2f}"
                 )
                 running_loss = 0.0
                 interval_steps = 0
+                interval_start_time = time.perf_counter()
             if is_checkpoint_step:
                 save_checkpoint(
                     {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
