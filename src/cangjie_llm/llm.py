@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import unicodedata
 import numpy as np
 import os
+import math
 from torch.utils.data import DataLoader, Dataset
 from cangjie_convertor import cj_encoder , cj_decoder
 from torch.amp import autocast
@@ -16,11 +17,13 @@ torch.manual_seed(67) #676767
 dropout = 0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 128
+batch_size = 192
 block_size = 256
 n_head = 12
 n_layer = 12
-lr = 3e-4
+lr = 4e-4
+min_lr = 4e-5
+warmup_steps = 2000
 epochs = 100
 log_interval = 1000
 checkpoint_interval = 1000
@@ -44,6 +47,14 @@ if device == "cuda":
     print(f"flash sdp: {torch.backends.cuda.flash_sdp_enabled()}")
     print(f"mem efficient sdp: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
     print(f"math sdp fallback: {torch.backends.cuda.math_sdp_enabled()}")
+
+def get_lr(step, total_steps):
+    if warmup_steps > 0 and step < warmup_steps:
+        return lr * (step + 1) / warmup_steps
+    decay_steps = max(1, total_steps - warmup_steps)
+    decay_step = min(max(0, step - warmup_steps), decay_steps)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_step / decay_steps))
+    return min_lr + (lr - min_lr) * cosine
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
@@ -645,12 +656,18 @@ if __name__=="__main__":
     model = maybe_compile_model(model)
     optimizer = create_optimizer(model)
     model.train()
+    total_steps = epochs * len(train_loader)
     for epoch in range(epochs):
         num_batches = len(train_loader)
         running_loss = 0.0
         interval_steps = 0
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
+            global_step = epoch * num_batches + step
+            current_lr = get_lr(global_step, total_steps)
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = current_lr
+
             x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
 
@@ -672,7 +689,8 @@ if __name__=="__main__":
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
-                    f"avg Loss: {avg_loss:.4f}"
+                    f"avg Loss: {avg_loss:.4f} | "
+                    f"lr: {current_lr:.2e}"
                 )
                 running_loss = 0.0
                 interval_steps = 0
