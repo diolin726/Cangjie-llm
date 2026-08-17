@@ -5,7 +5,13 @@ from cangjie_llm import tokenizer, LLM
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
 llm = LLM()
-state_dict = torch.load("./src/cangjie_llm/cangjie_epoch_2_latest.pt",map_location = device)
+ckpt = torch.load("./src/cangjie_llm/cangjie_epoch_2_latest.pt", map_location=device)
+state_dict = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+if any(key.startswith("_orig_mod.") for key in state_dict):
+    state_dict = {
+        key.removeprefix("_orig_mod."): value
+        for key, value in state_dict.items()
+    }
 llm.load_state_dict(state_dict)
 llm.to(device)
 llm.eval()
