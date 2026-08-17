@@ -25,6 +25,10 @@ n_layer = 12
 lr = 4e-4
 min_lr = 4e-5
 warmup_steps = 2000
+plateau_patience = 5
+plateau_factor = 0.5
+plateau_min_delta = 0.01
+plateau_min_lr = 1e-5
 epochs = 10
 log_interval = 1000
 checkpoint_interval = 1000
@@ -658,6 +662,9 @@ if __name__=="__main__":
     optimizer = create_optimizer(model)
     model.train()
     total_steps = epochs * len(train_loader)
+    best_loss = float("inf")
+    bad_intervals = 0
+    lr_scale = 1.0
     for epoch in range(epochs):
         num_batches = len(train_loader)
         running_loss = 0.0
@@ -666,7 +673,8 @@ if __name__=="__main__":
         print(f"epoch{epoch} starts")
         for step,(x, y) in enumerate(train_loader):
             global_step = epoch * num_batches + step
-            current_lr = get_lr(global_step, total_steps)
+            base_lr = get_lr(global_step, total_steps)
+            current_lr = max(plateau_min_lr, base_lr * lr_scale)
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
 
@@ -697,6 +705,21 @@ if __name__=="__main__":
                     f"lr: {current_lr:.2e} | "
                     f"steps/s: {steps_per_sec:.2f}"
                 )
+                if avg_loss < best_loss - plateau_min_delta:
+                    best_loss = avg_loss
+                    bad_intervals = 0
+                else:
+                    bad_intervals += 1
+                    if bad_intervals >= plateau_patience and current_lr > plateau_min_lr:
+                        lr_scale *= plateau_factor
+                        bad_intervals = 0
+                        next_lr = max(plateau_min_lr, base_lr * lr_scale)
+                        print(
+                            f"reduce lr on plateau: "
+                            f"best Loss: {best_loss:.4f} | "
+                            f"lr_scale: {lr_scale:.4f} | "
+                            f"next lr: {next_lr:.2e}"
+                        )
                 running_loss = 0.0
                 interval_steps = 0
                 interval_start_time = time.perf_counter()
