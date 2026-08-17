@@ -1,4 +1,5 @@
 import json
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,7 +26,14 @@ def load_cj_assets():
         padded_tokens.extend(["[PAD]"] * (5 - len(padded_tokens)))
         encoded_tokens[char] = tuple(padded_tokens)
 
-    unique_cj_keys = list(set(cj_keys))
+    unique_cj_keys = list(dict.fromkeys(cj_keys))
     reversed_cj_key = {key: i for i, key in enumerate(unique_cj_keys)}
     return data_map, unique_cj_keys, reversed_cj_key, cj_decodemap, encoded_tokens
+
+
+@lru_cache(maxsize=1)
+def get_cj_key_fingerprint():
+    _, unique_cj_keys, _, _, _ = load_cj_assets()
+    payload = "\n".join(unique_cj_keys).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 

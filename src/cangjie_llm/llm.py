@@ -7,8 +7,9 @@ import numpy as np
 import os
 import math
 import time
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from cangjie_convertor import cj_encoder , cj_decoder
+from cangjie_convertor._shared import get_cj_key_fingerprint
 from torch.amp import autocast
 import threading
 
@@ -34,7 +35,11 @@ log_interval = 1000
 checkpoint_interval = 1000
 torch_compile_mode = "default"
 return_training_logits = False
-sampled_softmax_negatives = 2048
+sampled_softmax_negatives = 0
+validation_ratio = 0.002
+validation_max_batches = 8
+sample_prompts = ["", "今天", "倉頡輸入法"]
+sample_max_tokens = 24
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpu_count > 0 else 'cpu'
@@ -66,7 +71,9 @@ def get_lr(step, total_steps):
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
     def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
         self.block_size = block_size
+        self.cj_key_fingerprint = get_cj_key_fingerprint()
         self.target_cache_path = self._get_target_cache_path(cache_path)
+        self.target_cache_meta_path = self._get_target_cache_meta_path(cache_path)
         if cache_path and os.path.exists(cache_path):
             print(f"從快取載入: {cache_path}")
             self.data = torch.load(cache_path, weights_only=True) #.to(torch.long)
@@ -128,6 +135,9 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 f"target ids 載入完成: shape={self.target_ids.shape}, "
                 f"記憶體={self.target_ids.element_size() * self.target_ids.nelement() / 1024**3:.2f} GB"
             )
+            if not self._target_cache_matches_mapping():
+                print("target ids 快取對應的 cj key 索引版本不符，將重新建立")
+                self.target_ids = None
         else:
             self.target_ids = None
 
@@ -148,6 +158,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             )
             if self.target_cache_path:
                 torch.save(self.target_ids, self.target_cache_path)
+                self._write_target_cache_meta()
                 print(f"已儲存 target id 快取: {self.target_cache_path}")
         #self.data=self.data.to(torch.long)
         #self.data.share_memory_()
@@ -158,6 +169,27 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             return None
         root, ext = os.path.splitext(cache_path)
         return f"{root}_target_ids{ext or '.pt'}"
+
+    @staticmethod
+    def _get_target_cache_meta_path(cache_path):
+        if cache_path is None:
+            return None
+        root, _ = os.path.splitext(cache_path)
+        return f"{root}_target_ids.meta.json"
+
+    def _target_cache_matches_mapping(self):
+        if self.target_cache_meta_path is None or not os.path.exists(self.target_cache_meta_path):
+            return False
+        with open(self.target_cache_meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        return meta.get("cj_key_fingerprint") == self.cj_key_fingerprint
+
+    def _write_target_cache_meta(self):
+        if self.target_cache_meta_path is None:
+            return
+        meta = {"cj_key_fingerprint": self.cj_key_fingerprint}
+        with open(self.target_cache_meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
 
     def _build_target_ids(self):
         tok = tokenizer()
@@ -626,6 +658,106 @@ def unwrap_model(model):
     return model
 
 
+def output_id_for_token(tok, token_name):
+    token_id = tok.vocab.get(token_name)
+    if token_id is None:
+        return None
+    output_id = token_id - 26
+    return output_id if output_id >= 0 else None
+
+
+def apply_generation_filters(logits, tok, generated_ids, repetition_penalty=1.2, allow_byte_tokens=False):
+    banned_ids = [
+        output_id_for_token(tok, "[PAD]"),
+        output_id_for_token(tok, "[BOS]"),
+        output_id_for_token(tok, "[UNK]"),
+    ]
+    for token_id in banned_ids:
+        if token_id is not None and token_id < logits.size(-1):
+            logits[:, token_id] = float("-inf")
+
+    if not allow_byte_tokens:
+        for token_name, token_id in tok.vocab.items():
+            if token_name.startswith("<BYTE_"):
+                output_id = token_id - 26
+                if 0 <= output_id < logits.size(-1):
+                    logits[:, output_id] = float("-inf")
+
+    if repetition_penalty != 1.0:
+        for token_id in set(generated_ids):
+            if 0 <= token_id < logits.size(-1):
+                token_logits = logits[:, token_id]
+                logits[:, token_id] = torch.where(
+                    token_logits > 0,
+                    token_logits / repetition_penalty,
+                    token_logits * repetition_penalty,
+                )
+
+    return logits
+
+
+def encode_prompt_to_output_ids(prompt_text, tok, head, target_device):
+    if not prompt_text:
+        return []
+    prompt_tokens = tok.tokenize(prompt_text)
+    prompt_tensor = torch.tensor(prompt_tokens, dtype=torch.long, device=target_device)
+    return head.input_to_output_idx(prompt_tensor).tolist()
+
+
+@torch.no_grad()
+def evaluate_loss(model, data_loader, max_batches):
+    if data_loader is None:
+        return None
+    was_training = model.training
+    model.eval()
+    losses = []
+    try:
+        for batch_idx, (x, y) in enumerate(data_loader):
+            if batch_idx >= max_batches:
+                break
+            x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
+            y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
+            with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
+                _, loss = model(x, y)
+            if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+                loss = loss.mean()
+            losses.append(loss.detach().float().item())
+    finally:
+        if was_training:
+            model.train()
+    if not losses:
+        return None
+    return sum(losses) / len(losses)
+
+
+@torch.no_grad()
+def generate_sample_text(model, tok, prompt_text, max_tokens):
+    was_training = model.training
+    base_model = unwrap_model(model)
+    model.eval()
+    try:
+        tok_id_list = [2]
+        tok_id_list.extend(encode_prompt_to_output_ids(prompt_text, tok, base_model.head, device))
+        all_vocab = tok.all_vocab().tolist()
+        eos_id = output_id_for_token(tok, "[EOS]")
+        for _ in range(max_tokens):
+            tok_list = torch.tensor(
+                [all_vocab[tok_id] for tok_id in tok_id_list],
+                dtype=torch.long,
+                device=device,
+            ).view(1, -1, 5)
+            next_tok, _ = model(tok_list)
+            next_tok = apply_generation_filters(next_tok[:, -1, :], tok, tok_id_list)
+            next_tok_id = next_tok.argmax(dim=-1).item()
+            if eos_id is not None and next_tok_id == eos_id:
+                break
+            tok_id_list.append(next_tok_id)
+        return tok.detokenize(tok_id_list).removeprefix("[BOS]")
+    finally:
+        if was_training:
+            model.train()
+
+
 def create_optimizer(model):
     if device == "cuda":
         try:
@@ -707,7 +839,23 @@ if __name__=="__main__":
 
     train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*", "cci2/00002*", "cci2/00003*", "cci2/00004*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
 
-    train_loader = DataLoader(train_ds,
+    dataset_len = len(train_ds)
+    tentative_val_size = min(
+        max(batch_size, int(dataset_len * validation_ratio)),
+        batch_size * validation_max_batches,
+    )
+    val_size = tentative_val_size if dataset_len > tentative_val_size else 0
+    train_size = dataset_len - val_size
+    if val_size > 0:
+        train_source = Subset(train_ds, range(train_size))
+        val_source = Subset(train_ds, range(train_size, dataset_len))
+        print(f"資料切分: train={len(train_source):,} | val={len(val_source):,}")
+    else:
+        train_source = train_ds
+        val_source = None
+        print("資料量不足以建立 validation split，將只記錄 training loss")
+
+    train_loader = DataLoader(train_source,
                               batch_size,
                               shuffle=True,
                               collate_fn=collate_cangjie_batch,
@@ -715,6 +863,16 @@ if __name__=="__main__":
                               pin_memory=True,
                               persistent_workers=True,
                               prefetch_factor=4)
+    val_loader = None
+    if val_source is not None:
+        val_loader = DataLoader(
+            val_source,
+            batch_size,
+            shuffle=False,
+            collate_fn=collate_cangjie_batch,
+            num_workers=0,
+            pin_memory=True,
+        )
     for batch , target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         print("Target shape" , target.shape )  # torch.Size([32, 256])
@@ -772,6 +930,13 @@ if __name__=="__main__":
                     f"lr: {current_lr:.2e} | "
                     f"steps/s: {steps_per_sec:.2f}"
                 )
+                val_loss = evaluate_loss(model, val_loader, validation_max_batches)
+                if val_loss is not None:
+                    print(f"validation Loss: {val_loss:.4f}")
+                tok = tokenizer()
+                for prompt_text in sample_prompts:
+                    sample = generate_sample_text(model, tok, prompt_text, sample_max_tokens)
+                    print(f"sample[{prompt_text or '<empty>'}]: {sample}")
                 if avg_loss < best_loss - plateau_min_delta:
                     best_loss = avg_loss
                     bad_intervals = 0
