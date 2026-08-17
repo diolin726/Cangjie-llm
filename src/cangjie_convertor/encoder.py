@@ -6,6 +6,23 @@ class cj_encoder:
         self.vocab_size = vocab_size
         self.make_vocab()
         self.data_map, _, self.reversed_cj_key, _, self.encoded_tokens = load_cj_assets()
+        self.pad_id = self.vocab["[PAD]"]
+        self.unk_row = (
+            self.vocab["[UNK]"],
+            self.pad_id,
+            self.pad_id,
+            self.pad_id,
+            self.pad_id,
+        )
+        self.single_token_rows = {
+            token: (token_id, self.pad_id, self.pad_id, self.pad_id, self.pad_id)
+            for token, token_id in self.vocab.items()
+        }
+        self.encoded_token_rows = {
+            char: tuple(self.vocab[token] for token in tokens)
+            for char, tokens in self.encoded_tokens.items()
+        }
+        self.byte_rows_cache = {}
         self.char_to_output_id = {
             char: self.reversed_cj_key[key] + self.vocab_size - 26
             for char, key in self.data_map.items()
@@ -34,6 +51,42 @@ class cj_encoder:
     def encode(self, s):
         encoded_tokens = self.encoded_tokens
         return [encoded_tokens.get(token, [token]) for token in s]
+
+    def encode_text_to_rows(self, s):
+        encoded_token_rows = self.encoded_token_rows
+        single_token_rows = self.single_token_rows
+        byte_rows_cache = self.byte_rows_cache
+        unk_row = self.unk_row
+        pad_id = self.pad_id
+        vocab = self.vocab
+        rows = []
+        append = rows.append
+        extend = rows.extend
+
+        for token in s:
+            encoded = encoded_token_rows.get(token)
+            if encoded is not None:
+                append(encoded)
+                continue
+
+            single = single_token_rows.get(token)
+            if single is not None:
+                append(single)
+                continue
+
+            cached = byte_rows_cache.get(token)
+            if cached is None:
+                try:
+                    cached = tuple(
+                        (vocab[f"<BYTE_{byte}>"], pad_id, pad_id, pad_id, pad_id)
+                        for byte in token.encode("utf-8")
+                    )
+                except Exception:
+                    cached = (unk_row,)
+                byte_rows_cache[token] = cached
+            extend(cached)
+
+        return rows
 
     def encode_to_id(self , text): # Warning!! only when input are in token table
         char_to_output_id = self.char_to_output_id

@@ -23,13 +23,13 @@ batch_size = 256
 block_size = 256
 n_head = 12
 n_layer = 12
-lr = 5e-5
-min_lr = 1e-5
-warmup_steps = 1000
+lr = 3e-5
+min_lr = 3e-6
+warmup_steps = 200
 plateau_patience = 3
 plateau_factor = 0.5
 plateau_min_delta = 0.003
-plateau_min_lr = 1e-5
+plateau_min_lr = 3e-6
 epochs = 1
 log_interval = 1000
 checkpoint_interval = 1000
@@ -40,6 +40,7 @@ validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
 sample_max_tokens = 24
+preprocess_batch_size = 1024
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpu_count > 0 else 'cpu'
@@ -69,7 +70,7 @@ def get_lr(step, total_steps):
     return min_lr + (lr - min_lr) * cosine
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , block_size=256, cache_path=None):
+    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , split="train" , block_size=256, cache_path=None):
         self.block_size = block_size
         self.cj_key_fingerprint = get_cj_key_fingerprint()
         self.target_cache_path = self._get_target_cache_path(cache_path)
@@ -84,8 +85,20 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             import opencc
             stotconverter = opencc.OpenCC('s2twp')
             tok = tokenizer()
-            BOS = [tok.vocab["[BOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
-            EOS = [tok.vocab["[EOS]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"], tok.vocab["[PAD]"]]
+            bos_row = (
+                tok.vocab["[BOS]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+            )
+            eos_row = (
+                tok.vocab["[EOS]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+                tok.vocab["[PAD]"],
+            )
 
             if json_path is not None :
                 ds = load_dataset("json", data_files=json_path, split="train")
@@ -95,30 +108,38 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     data_dir=dataset_dir,
                     data_files=data_files,
                     split="train",
-                    )
+                )
             chunk_size=10000000
             chunk_tokens = []
             token_count=0
             tensor_list=[]
             print(ds[0])
-            for i, row in enumerate(ds):
-                if isinstance(row , dict ) :
-                    text = row.get("text") or ""
+            total_rows = len(ds)
+            for start in range(0, total_rows, preprocess_batch_size):
+                batch = ds[start:start + preprocess_batch_size]
+                if isinstance(batch, dict):
+                    texts = batch.get("text", [])
                 else:
-                    text = row
-                text = stotconverter.convert(text)
-                ids = tok.tokenize(text)  # List of 5-tuples
-                chunk_tokens.append(BOS)
-                chunk_tokens.extend(ids)
-                chunk_tokens.append(EOS)
-                if (i + 1) % 10000 == 0:
-                    print(f"  已處理 {i+1}/{len(ds)} 篇，共 {len(chunk_tokens) + token_count} tokens")
-                if( len(chunk_tokens) >= chunk_size ):
-                    tensor_list.append( torch.tensor(chunk_tokens , dtype=torch.int16))
-                    token_count += len(chunk_tokens)
+                    texts = batch
+
+                for text in texts:
+                    text = stotconverter.convert(text or "")
+                    ids = tok.tokenize(text)
+                    chunk_tokens.extend(bos_row)
+                    for row in ids:
+                        chunk_tokens.extend(row)
+                    chunk_tokens.extend(eos_row)
+
+                processed = min(start + len(texts), total_rows)
+                if processed % 10000 == 0 or processed == total_rows:
+                    current_token_rows = len(chunk_tokens) // 5
+                    print(f"  已處理 {processed}/{total_rows} 篇，共 {current_token_rows + token_count} tokens")
+                if (len(chunk_tokens) // 5) >= chunk_size:
+                    tensor_list.append(torch.tensor(chunk_tokens, dtype=torch.int16).view(-1, 5))
+                    token_count += len(chunk_tokens) // 5
                     chunk_tokens=[]
             if(chunk_tokens):
-                tensor_list.append(torch.tensor(chunk_tokens , dtype=torch.int16))
+                tensor_list.append(torch.tensor(chunk_tokens , dtype=torch.int16).view(-1, 5))
                 chunk_tokens=[]
 
             # 轉成 (N, 5) 的 int16 tensor
@@ -274,12 +295,8 @@ class tokenizer():
             return [[self.vocab["[UNK]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"],self.vocab["[PAD]"]]]
 
     def tokenize(self, s ):
-        s = self.cj_encoder.encode( unicodedata.normalize('NFKC',s).replace('\u3000', ' ') )
-        ans=[]
-        for token_list in s :
-            id_list = self.tokenlist_to_id(token_list)
-            ans.extend(id_list)
-        return ans
+        normalized = unicodedata.normalize('NFKC', s).replace('\u3000', ' ')
+        return self.cj_encoder.encode_text_to_rows(normalized)
     def id_decode(self, ids): #id list [26,15,23 ...]
         ans=[]
         for id in ids:
@@ -837,7 +854,12 @@ if __name__=="__main__":
 
 
 
-    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*", "cci2/00002*", "cci2/00003*", "cci2/00004*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
+    train_ds = CangjieDataset(
+        dataset_name="opencsg/chinese-fineweb-edu",
+        split="train[:50%]",
+        block_size=block_size, 
+        cache_path="./cangjie_cached.pt"
+    )
 
     dataset_len = len(train_ds)
     tentative_val_size = min(

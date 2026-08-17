@@ -5,7 +5,7 @@ from cangjie_llm import tokenizer, LLM
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
 llm = LLM()
-checkpoint_path = "./src/cangjie_llm/cangjie_epoch_1_latest.pt"
+checkpoint_path = "./src/cangjie_llm/best_val.pt"
 prompt = ""
 decode_strategy = "top_k"
 temperature = 0.7
