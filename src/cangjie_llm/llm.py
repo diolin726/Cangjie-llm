@@ -33,7 +33,7 @@ plateau_patience = 3
 plateau_factor = 0.5
 plateau_min_delta = 0.003
 plateau_min_lr = 3e-6
-epochs = 1
+epochs = 2
 log_interval = 1000
 checkpoint_interval = 1000
 torch_compile_mode = "default"
@@ -1057,8 +1057,8 @@ if __name__=="__main__":
 
 
     train_ds = CangjieDataset(
-        dataset_name="opencsg/chinese-fineweb-edu",
-        split="train[:50%]",
+        dataset_name="zaibd/wikipedia-pretrain-zh-tw",
+        split="train[:100%]",
         block_size=block_size, 
         cache_path="./cangjie_cached.pt"
     )
@@ -1102,7 +1102,7 @@ if __name__=="__main__":
         print("Target shape" , target.shape )  # torch.Size([32, 256])
         break
 
-    state_dict = load_checkpoint("./cangjie.pt", map_location=device)
+    state_dict = load_checkpoint("./best_val.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
     model = maybe_enable_multi_gpu(model)
@@ -1110,8 +1110,8 @@ if __name__=="__main__":
     optimizer = create_optimizer(model)
     model.train()
     total_steps = epochs * len(train_loader)
-    best_train_loss = float("inf")
     best_val_loss = float("inf")
+    best_plateau_metric = float("inf")
     bad_intervals = 0
     lr_scale = 1.0
     for epoch in range(epochs):
@@ -1148,6 +1148,8 @@ if __name__=="__main__":
                 steps_per_sec = interval_steps / elapsed if elapsed > 0 else 0.0
                 progress = (step + 1) / num_batches * 100
                 avg_loss = (running_loss / interval_steps).item()
+                plateau_metric = avg_loss
+                plateau_metric_name = "train Loss"
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
@@ -1158,6 +1160,8 @@ if __name__=="__main__":
                 val_loss = evaluate_loss(model, val_loader, validation_max_batches)
                 if val_loss is not None:
                     print(f"validation Loss: {val_loss:.4f}")
+                    plateau_metric = val_loss
+                    plateau_metric_name = "validation Loss"
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         save_checkpoint(
@@ -1169,8 +1173,8 @@ if __name__=="__main__":
                 for prompt_text in sample_prompts:
                     sample = generate_sample_text(model, tok, prompt_text, sample_max_tokens)
                     print(f"sample[{prompt_text or '<empty>'}]: {sample}")
-                if avg_loss < best_train_loss - plateau_min_delta:
-                    best_train_loss = avg_loss
+                if plateau_metric < best_plateau_metric - plateau_min_delta:
+                    best_plateau_metric = plateau_metric
                     bad_intervals = 0
                 else:
                     bad_intervals += 1
@@ -1180,7 +1184,7 @@ if __name__=="__main__":
                         next_lr = max(plateau_min_lr, base_lr * lr_scale)
                         print(
                             f"reduce lr on plateau: "
-                            f"best train Loss: {best_train_loss:.4f} | "
+                            f"best {plateau_metric_name}: {best_plateau_metric:.4f} | "
                             f"lr_scale: {lr_scale:.4f} | "
                             f"next lr: {next_lr:.2e}"
                         )
