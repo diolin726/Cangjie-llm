@@ -25,14 +25,16 @@ n_layer = 12
 lr = 3e-4
 min_lr = 3e-5
 warmup_steps = 1000
-plateau_patience = 5
+plateau_patience = 3
 plateau_factor = 0.5
-plateau_min_delta = 0.01
+plateau_min_delta = 0.003
 plateau_min_lr = 1e-5
 epochs = 1
 log_interval = 1000
 checkpoint_interval = 1000
 torch_compile_mode = "default"
+return_training_logits = False
+sampled_softmax_negatives = 2048
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpu_count > 0 else 'cpu'
@@ -465,6 +467,8 @@ class cj_head(nn.Module):
         sorted_hashes, sorted_indices = torch.sort(hashes)
         self.register_buffer('sorted_hashes', sorted_hashes)   # (13228,) int64
         self.register_buffer('sorted_indices', sorted_indices) # (13228,) int64
+        self.register_buffer('_cached_output_emb', torch.empty(0), persistent=False)
+        self._cached_output_versions = None
         # self.tuple_to_id = {tuple(c.tolist()): i for i, c in enumerate(codes)}
 
     def input_to_output_idx(self, target):
@@ -480,8 +484,7 @@ class cj_head(nn.Module):
         pos = torch.searchsorted(self.sorted_hashes, target_hash)
         return self.sorted_indices[pos]
 
-    def forward(self, hidden):
-        # hidden: (B , E) -> logits: (B, 13228)
+    def _build_output_emb(self):
         token_weight = self.emb_layer.token_emb.weight
         output_emb = token_weight.new_empty((self.output_codes.size(0), token_weight.size(1)))
 
@@ -494,7 +497,72 @@ class cj_head(nn.Module):
             cj_emb = self.emb_layer.position(cj_token_emb)
             output_emb.index_copy_(0, self.cj_output_indices, cj_emb)
 
-        return hidden @ output_emb.T
+        return output_emb
+
+    def _build_output_emb_for_indices(self, output_indices):
+        token_weight = self.emb_layer.token_emb.weight
+        codes = self.output_codes.index_select(0, output_indices).to(torch.long)
+        first_ids = codes[:, 0]
+        cj_start = self.emb_layer.CJ_START
+        cj_end = self.emb_layer.CJ_END
+        is_cj = (first_ids >= cj_start) & (first_ids <= cj_end)
+
+        output_emb = F.embedding(first_ids, token_weight)
+        if is_cj.any():
+            cj_token_emb = F.embedding(codes[is_cj], token_weight).flatten(1)
+            cj_emb = self.emb_layer.position(cj_token_emb)
+            output_emb = output_emb.index_copy(0, torch.nonzero(is_cj, as_tuple=False).squeeze(1), cj_emb)
+        return output_emb
+
+
+    def output_emb(self):
+        if self.training and torch.is_grad_enabled():
+            return self._build_output_emb()
+
+        token_weight = self.emb_layer.token_emb.weight
+        position_weight = self.emb_layer.position.weight
+        current_versions = (token_weight._version, position_weight._version)
+        needs_refresh = (
+            self._cached_output_emb.numel() == 0
+            or self._cached_output_versions != current_versions
+            or self._cached_output_emb.device != token_weight.device
+            or self._cached_output_emb.dtype != token_weight.dtype
+        )
+        if needs_refresh:
+            self._cached_output_emb = self._build_output_emb().detach()
+            self._cached_output_versions = current_versions
+        return self._cached_output_emb
+
+    def logits(self, hidden):
+        return hidden @ self.output_emb().T
+
+    def loss(self, hidden, target):
+        target_idx = target.to(torch.long) if target.dim() == 2 else self.input_to_output_idx(target)
+        hidden = hidden.flatten(0, 1)
+        target_idx = target_idx.reshape(-1)
+
+        if sampled_softmax_negatives <= 0 or sampled_softmax_negatives >= self.output_codes.size(0):
+            logits = self.logits(hidden)
+            return F.cross_entropy(logits, target_idx)
+
+        negative_idx = torch.randint(
+            self.output_codes.size(0),
+            (sampled_softmax_negatives,),
+            device=target_idx.device,
+            dtype=target_idx.dtype,
+        )
+        sampled_idx, inverse = torch.unique(
+            torch.cat((target_idx, negative_idx)),
+            sorted=True,
+            return_inverse=True,
+        )
+        target_pos = inverse[:target_idx.numel()]
+        sampled_emb = self._build_output_emb_for_indices(sampled_idx)
+        logits = hidden @ sampled_emb.T
+        return F.cross_entropy(logits, target_pos)
+
+    def forward(self, hidden):
+        return self.logits(hidden)
 
 
 class LLM(nn.Module):
@@ -520,16 +588,13 @@ class LLM(nn.Module):
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
-        # h = h[:,-1,:] # (B , E)
-        logits = self.head(h)  # (B, 13228)
 
         loss = None
         if target is not None:
-            if target.dim() == 2:
-                target_idx = target.to(torch.long)
-            else:
-                target_idx = self.head.input_to_output_idx(target) # [B ]
-            loss = F.cross_entropy(logits.view(-1, 13228), target_idx.view(-1))
+            loss = self.head.loss(h, target)
+            logits = self.head(h) if return_training_logits else None
+        else:
+            logits = self.head(h)
 
         return logits, loss
 
@@ -639,7 +704,8 @@ if __name__=="__main__":
         [ 13,  23,  20,  26,  26]], dtype=torch.int16))) #676767
 
 
-    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*", "cci2/00002*", "cci2/00003*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
+
+    train_ds = CangjieDataset( dataset_name="opencsg/chinese-fineweb-edu" ,data_files=["cci2/00000*", "cci2/00001*", "cci2/00002*", "cci2/00003*", "cci2/00004*"] , block_size=block_size, cache_path="./cangjie_cached.pt")
 
     train_loader = DataLoader(train_ds,
                               batch_size,
@@ -654,7 +720,7 @@ if __name__=="__main__":
         print("Target shape" , target.shape )  # torch.Size([32, 256])
         break
 
-    state_dict = load_checkpoint("./cangjie_epoch_2_latest.pt", map_location=device)
+    state_dict = load_checkpoint("./cangjie.pt", map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
     model = maybe_enable_multi_gpu(model)
@@ -667,7 +733,7 @@ if __name__=="__main__":
     lr_scale = 1.0
     for epoch in range(epochs):
         num_batches = len(train_loader)
-        running_loss = 0.0
+        running_loss = None
         interval_steps = 0
         interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
@@ -689,7 +755,8 @@ if __name__=="__main__":
 
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
+            loss_for_log = loss.detach()
+            running_loss = loss_for_log if running_loss is None else running_loss + loss_for_log
             interval_steps += 1
             is_log_step = (step + 1) % log_interval == 0 or (step + 1) == num_batches
             is_checkpoint_step = (step + 1) % checkpoint_interval == 0 or (step + 1) == num_batches
@@ -697,7 +764,7 @@ if __name__=="__main__":
                 elapsed = time.perf_counter() - interval_start_time
                 steps_per_sec = interval_steps / elapsed if elapsed > 0 else 0.0
                 progress = (step + 1) / num_batches * 100
-                avg_loss = running_loss / interval_steps
+                avg_loss = (running_loss / interval_steps).item()
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
@@ -720,7 +787,7 @@ if __name__=="__main__":
                             f"lr_scale: {lr_scale:.4f} | "
                             f"next lr: {next_lr:.2e}"
                         )
-                running_loss = 0.0
+                running_loss = None
                 interval_steps = 0
                 interval_start_time = time.perf_counter()
             if is_checkpoint_step:
