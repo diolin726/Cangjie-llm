@@ -38,7 +38,7 @@ return_training_logits = False
 sampled_softmax_negatives = 0
 validation_ratio = 0.002
 validation_max_batches = 8
-sample_prompts = ["", "今天", "倉頡輸入法"]
+sample_prompts = [""]
 sample_max_tokens = 24
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
