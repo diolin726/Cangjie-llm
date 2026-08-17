@@ -1057,7 +1057,7 @@ if __name__=="__main__":
 
 
     train_ds = CangjieDataset(
-        dataset_name="zaibd/wikipedia-pretrain-zh-tw",
+        dataset_name="opencsg/chinese-fineweb-edu-v2",
         split="train[:100%]",
         block_size=block_size, 
         cache_path="./cangjie_cached.pt"
