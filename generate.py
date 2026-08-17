@@ -7,10 +7,12 @@ tok = tokenizer()
 llm = LLM()
 checkpoint_path = "./src/cangjie_llm/cangjie_epoch_2_latest.pt"
 prompt = ""
-temperature = 0.8
-top_k = 50
-repetition_penalty = 1.15
+temperature = 0.7
+top_k = 30
+repetition_penalty = 1.2
 max_token = 50
+allow_byte_tokens = False
+stop_on_eos = True
 
 
 def output_id_for_token(token_name):
@@ -30,6 +32,13 @@ def apply_sampling_filters(logits, generated_ids):
     for token_id in banned_ids:
         if token_id is not None and token_id < logits.size(-1):
             logits[:, token_id] = float("-inf")
+
+    if not allow_byte_tokens:
+        for token_name, token_id in tok.vocab.items():
+            if token_name.startswith("<BYTE_"):
+                output_id = token_id - 26
+                if 0 <= output_id < logits.size(-1):
+                    logits[:, output_id] = float("-inf")
 
     if repetition_penalty != 1.0:
         for token_id in set(generated_ids):
@@ -62,6 +71,7 @@ llm.eval()
 tok_id_list = [2]
 tok_id_list = tok_id_list + tok.cj_encoder.encode_to_id(prompt)
 all_vocab = tok.all_vocab().tolist()
+eos_id = output_id_for_token("[EOS]")
 
 
 with torch.inference_mode():
@@ -76,5 +86,7 @@ with torch.inference_mode():
         next_tok = apply_sampling_filters(next_tok, tok_id_list)
         probs = F.softmax(next_tok / temperature, dim=-1)
         next_tok_id = torch.multinomial(probs, num_samples=1).item()
+        if stop_on_eos and next_tok_id == eos_id:
+            break
         tok_id_list.append(next_tok_id)
         print(tok.detokenize(tok_id_list).removeprefix("[BOS]"))
