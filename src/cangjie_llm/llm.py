@@ -19,12 +19,12 @@ torch.manual_seed(67) #676767
 dropout = 0.1
 embed_size = 384
 vocab_size = 383 #需要手動調整
-batch_size = 192
+batch_size = 256
 block_size = 256
 n_head = 12
 n_layer = 12
-lr = 3e-4
-min_lr = 3e-5
+lr = 5e-5
+min_lr = 1e-5
 warmup_steps = 1000
 plateau_patience = 3
 plateau_factor = 0.5
@@ -886,7 +886,8 @@ if __name__=="__main__":
     optimizer = create_optimizer(model)
     model.train()
     total_steps = epochs * len(train_loader)
-    best_loss = float("inf")
+    best_train_loss = float("inf")
+    best_val_loss = float("inf")
     bad_intervals = 0
     lr_scale = 1.0
     for epoch in range(epochs):
@@ -933,12 +934,19 @@ if __name__=="__main__":
                 val_loss = evaluate_loss(model, val_loader, validation_max_batches)
                 if val_loss is not None:
                     print(f"validation Loss: {val_loss:.4f}")
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        save_checkpoint(
+                            {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
+                            "best_val.pt"
+                        )
+                        print(f"saved best validation checkpoint: best_val.pt ({best_val_loss:.4f})")
                 tok = tokenizer()
                 for prompt_text in sample_prompts:
                     sample = generate_sample_text(model, tok, prompt_text, sample_max_tokens)
                     print(f"sample[{prompt_text or '<empty>'}]: {sample}")
-                if avg_loss < best_loss - plateau_min_delta:
-                    best_loss = avg_loss
+                if avg_loss < best_train_loss - plateau_min_delta:
+                    best_train_loss = avg_loss
                     bad_intervals = 0
                 else:
                     bad_intervals += 1
@@ -948,7 +956,7 @@ if __name__=="__main__":
                         next_lr = max(plateau_min_lr, base_lr * lr_scale)
                         print(
                             f"reduce lr on plateau: "
-                            f"best Loss: {best_loss:.4f} | "
+                            f"best train Loss: {best_train_loss:.4f} | "
                             f"lr_scale: {lr_scale:.4f} | "
                             f"next lr: {next_lr:.2e}"
                         )

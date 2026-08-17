@@ -5,10 +5,11 @@ from cangjie_llm import tokenizer, LLM
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
 llm = LLM()
-checkpoint_path = "./src/cangjie_llm/cangjie_epoch_2_latest.pt"
+checkpoint_path = "./src/cangjie_llm/cangjie_epoch_1_latest.pt"
 prompt = ""
+decode_strategy = "top_k"
 temperature = 0.7
-top_k = 30
+top_k = 10
 repetition_penalty = 1.2
 max_token = 50
 allow_byte_tokens = False
@@ -57,6 +58,14 @@ def apply_sampling_filters(logits, generated_ids):
     return logits
 
 
+def encode_prompt_to_output_ids(prompt_text):
+    if not prompt_text:
+        return []
+    prompt_tokens = tok.tokenize(prompt_text)
+    prompt_tensor = torch.tensor(prompt_tokens, dtype=torch.long, device=device)
+    return llm.head.input_to_output_idx(prompt_tensor).tolist()
+
+
 ckpt = torch.load(checkpoint_path, map_location=device)
 state_dict = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
 if any(key.startswith("_orig_mod.") for key in state_dict):
@@ -69,7 +78,7 @@ llm.to(device)
 llm.eval()
 
 tok_id_list = [2]
-tok_id_list = tok_id_list + tok.cj_encoder.encode_to_id(prompt)
+tok_id_list.extend(encode_prompt_to_output_ids(prompt))
 all_vocab = tok.all_vocab().tolist()
 eos_id = output_id_for_token("[EOS]")
 
@@ -84,8 +93,13 @@ with torch.inference_mode():
         next_tok, _ = llm(tok_list)
         next_tok = next_tok[:, -1, :]
         next_tok = apply_sampling_filters(next_tok, tok_id_list)
-        probs = F.softmax(next_tok / temperature, dim=-1)
-        next_tok_id = torch.multinomial(probs, num_samples=1).item()
+        if decode_strategy == "greedy":
+            next_tok_id = next_tok.argmax(dim=-1).item()
+        elif decode_strategy in {"top-k", "top_k"}:
+            probs = F.softmax(next_tok / temperature, dim=-1)
+            next_tok_id = torch.multinomial(probs, num_samples=1).item()
+        else:
+            raise ValueError(f"Unsupported decode_strategy: {decode_strategy}")
         if stop_on_eos and next_tok_id == eos_id:
             break
         tok_id_list.append(next_tok_id)
