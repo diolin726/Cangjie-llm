@@ -507,12 +507,12 @@ class cj_head(nn.Module):
         cj_end = self.emb_layer.CJ_END
         is_cj = (first_ids >= cj_start) & (first_ids <= cj_end)
 
-        output_emb = F.embedding(first_ids, token_weight)
-        if is_cj.any():
-            cj_token_emb = F.embedding(codes[is_cj], token_weight).flatten(1)
-            cj_emb = self.emb_layer.position(cj_token_emb)
-            output_emb = output_emb.index_copy(0, torch.nonzero(is_cj, as_tuple=False).squeeze(1), cj_emb)
-        return output_emb
+        non_cj_emb = F.embedding(first_ids, token_weight)
+        cj_token_emb = F.embedding(codes, token_weight).flatten(1)
+        cj_emb = self.emb_layer.position(cj_token_emb)
+        if cj_emb.dtype != non_cj_emb.dtype:
+            cj_emb = cj_emb.to(non_cj_emb.dtype)
+        return torch.where(is_cj.unsqueeze(-1), cj_emb, non_cj_emb)
 
 
     def output_emb(self):
