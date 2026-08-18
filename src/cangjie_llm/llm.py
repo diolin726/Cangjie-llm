@@ -1059,7 +1059,7 @@ if __name__=="__main__":
 
     train_ds = CangjieDataset(
         dataset_name="opencsg/chinese-fineweb-edu-v2",
-        split="train[:100%]",
+        split="train",
         block_size=block_size, 
         data_files=["data/0000*" , "data/0001*"],
         cache_path="./cangjie_cached.pt"
