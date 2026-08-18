@@ -255,6 +255,11 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     data_files=data_files,
                     split=split,
                 )
+            if "source" in ds.column_names:
+                all_sources = sorted(
+                    str(source) for source in ds.unique("source") if source is not None
+                )
+                print(f"所有 source: {all_sources}")
             if source_filter:
                 before_filter = len(ds)
                 if source_filter_mode == "include":
@@ -1102,7 +1107,7 @@ if __name__=="__main__":
         dataset_name="opencsg/Fineweb-Edu-Chinese-V2.1",
         split="train[:100%]",
         block_size=block_size, 
-        data_files=[f"4_5/{index:05d}.parquet" for index in range(401)],
+        data_files=[f"4_5/{index:06d}.parquet" for index in range(401)],
         source_filter="IndustryCorpus2",
         source_filter_mode="exclude",
         cache_path="./cangjie_cached.pt"
