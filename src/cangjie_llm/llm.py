@@ -90,7 +90,16 @@ def _normalize_cache_value(value):
     return value
 
 
-def _build_cache_metadata(dataset_name, dataset_dir, data_files, json_path, split, cj_key_fingerprint):
+def _build_cache_metadata(
+    dataset_name,
+    dataset_dir,
+    data_files,
+    json_path,
+    split,
+    cj_key_fingerprint,
+    source_filter,
+    source_filter_mode,
+):
     return {
         "cache_format_version": cache_format_version,
         "dataset_name": dataset_name,
@@ -99,6 +108,8 @@ def _build_cache_metadata(dataset_name, dataset_dir, data_files, json_path, spli
         "json_path": json_path,
         "split": split,
         "cj_key_fingerprint": cj_key_fingerprint,
+        "source_filter": source_filter,
+        "source_filter_mode": source_filter_mode,
     }
 
 
@@ -195,8 +206,21 @@ def _iter_text_batches(ds, total_rows):
 
 
 class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
-    def __init__(self, json_path=None, dataset_name=None , dataset_dir=None , data_files=None , split="train" , block_size=256, cache_path=None):
+    def __init__(
+        self,
+        json_path=None,
+        dataset_name=None,
+        dataset_dir=None,
+        data_files=None,
+        split="train",
+        block_size=256,
+        cache_path=None,
+        source_filter=None,
+        source_filter_mode="include",
+    ):
         self.block_size = block_size
+        if source_filter_mode not in {"include", "exclude"}:
+            raise ValueError("source_filter_mode 必須是 'include' 或 'exclude'")
         self.cj_key_fingerprint = get_cj_key_fingerprint()
         self.cache_metadata = _build_cache_metadata(
             dataset_name=dataset_name,
@@ -205,6 +229,8 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             json_path=json_path,
             split=split,
             cj_key_fingerprint=self.cj_key_fingerprint,
+            source_filter=source_filter,
+            source_filter_mode=source_filter_mode,
         )
         self.cache_meta_path = self._get_cache_meta_path(cache_path)
         self.target_cache_path = self._get_target_cache_path(cache_path)
@@ -229,6 +255,22 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     data_files=data_files,
                     split=split,
                 )
+            if source_filter:
+                before_filter = len(ds)
+                if source_filter_mode == "include":
+                    ds = ds.filter(lambda row: row.get("source") == source_filter)
+                else:
+                    ds = ds.filter(lambda row: row.get("source") != source_filter)
+                after_filter = len(ds)
+                print(
+                    f"資料來源過濾: {source_filter_mode}={source_filter} | "
+                    f"{before_filter:,} -> {after_filter:,} 筆"
+                )
+                if after_filter == 0:
+                    raise ValueError(
+                        f"找不到 source={source_filter!r} 的資料，"
+                        "請確認資料集的 source 欄位名稱。"
+                    )
             print(ds[0])
             total_rows = len(ds)
             self.data, self.target_ids = self._preprocess_dataset(ds, total_rows)
@@ -1057,10 +1099,12 @@ if __name__=="__main__":
 
 
     train_ds = CangjieDataset(
-        dataset_name="opencsg/chinese-fineweb-edu-v2",
+        dataset_name="opencsg/Fineweb-Edu-Chinese-V2.1",
         split="train[:100%]",
         block_size=block_size, 
-        data_files=["data/0000*" ], # "data/0001*"],
+        data_files=[f"4_5/{index:05d}.parquet" for index in range(401)],
+        source_filter="IndustryCorpus2",
+        source_filter_mode="exclude",
         cache_path="./cangjie_cached.pt"
     )
 
