@@ -1060,7 +1060,7 @@ if __name__=="__main__":
         dataset_name="opencsg/chinese-fineweb-edu-v2",
         split="train[:100%]",
         block_size=block_size, 
-        data_files=["0000*" , "0001*" ]
+        data_files=["0000*" , "0001*"],
         cache_path="./cangjie_cached.pt"
     )
 
