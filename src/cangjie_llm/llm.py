@@ -221,14 +221,13 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             from datasets import load_dataset
 
             if json_path is not None :
-                ds = load_dataset("json", data_files=json_path, split="train")
+                ds = load_dataset("json", data_files=json_path, split=split)
             else:
                 ds=load_dataset(
                     dataset_name ,
                     data_dir=dataset_dir,
                     data_files=data_files,
                     split=split,
-                    streaming=True,
                 )
             print(ds[0])
             total_rows = len(ds)
@@ -1059,7 +1058,7 @@ if __name__=="__main__":
 
     train_ds = CangjieDataset(
         dataset_name="opencsg/chinese-fineweb-edu-v2",
-        split="train",
+        split="train[:100%]",
         block_size=block_size, 
         data_files=["data/0000*" , "data/0001*"],
         cache_path="./cangjie_cached.pt"
