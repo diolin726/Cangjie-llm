@@ -228,6 +228,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     data_dir=dataset_dir,
                     data_files=data_files,
                     split=split,
+                    streaming=True,
                 )
             print(ds[0])
             total_rows = len(ds)
