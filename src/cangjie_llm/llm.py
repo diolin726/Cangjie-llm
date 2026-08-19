@@ -6,6 +6,7 @@ import unicodedata
 import numpy as np
 import os
 import math
+import re
 import time
 import shutil
 import tempfile
@@ -47,7 +48,10 @@ preprocess_batch_size = 1024
 preprocess_chunk_rows = 10_000_000
 preprocess_workers = max(1, min(4, os.cpu_count() or 1))
 preprocess_queue_depth = max(2, preprocess_workers * 2)
-cache_format_version = 2
+cache_format_version = 3
+
+# Remove regex backreference remnants such as ``\1`` or ``\123`` before tokenization.
+training_escape_pattern = re.compile(r"\\[1-9][0-9]*")
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpu_count > 0 else 'cpu'
@@ -174,7 +178,8 @@ def _process_text_batch(texts):
     row_parts = []
     total_rows = 0
     for text in texts:
-        normalized = converter.convert(text or "")
+        cleaned = training_escape_pattern.sub(" ", text or "")
+        normalized = converter.convert(cleaned)
         token_rows = tok.tokenize(normalized)
         row_count = len(token_rows) + 2
         doc_rows = np.empty((row_count, 5), dtype=np.int16)
