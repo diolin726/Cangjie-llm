@@ -11,6 +11,7 @@ import time
 import shutil
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from functools import lru_cache
 from torch.utils.data import DataLoader, Dataset, Subset
 from cangjie_convertor import cj_encoder , cj_decoder
 from cangjie_convertor._shared import get_cj_key_fingerprint
@@ -50,6 +51,9 @@ preprocess_chunk_rows = 10_000_000
 preprocess_workers = max(1, min(4, os.cpu_count() or 1))
 preprocess_queue_depth = max(2, preprocess_workers * 2)
 cache_format_version = 3
+common_char_table_size = 3500
+common_word_table_size = 20000
+common_word_max_length = 4
 
 # Remove regex backreference remnants such as ``\1`` or ``\123`` before tokenization.
 training_escape_pattern = re.compile(r"\\[1-9][0-9]*")
@@ -135,6 +139,89 @@ def _build_output_lookup_arrays():
     hashes = _pack_rows_np(codes)
     order = np.argsort(hashes, kind="mergesort")
     return hashes[order], order.astype(np.int16, copy=False)
+
+
+def _is_cjk_char(char):
+    if not isinstance(char, str) or len(char) != 1:
+        return False
+    codepoint = ord(char)
+    return (
+        0x3400 <= codepoint <= 0x4DBF or
+        0x4E00 <= codepoint <= 0x9FFF or
+        0xF900 <= codepoint <= 0xFAFF
+    )
+
+
+def _is_basic_cjk_char(char):
+    return isinstance(char, str) and len(char) == 1 and 0x4E00 <= ord(char) <= 0x9FFF
+
+
+def _is_cjk_word(word):
+    return (
+        isinstance(word, str)
+        and 2 <= len(word) <= common_word_max_length
+        and all(_is_cjk_char(char) for char in word)
+    )
+
+
+@lru_cache(maxsize=1)
+def get_common_char_rank():
+    import jieba
+
+    jieba.initialize()
+    single_char_freq = [
+        (char, freq)
+        for char, freq in jieba.dt.FREQ.items()
+        if _is_cjk_char(char) and isinstance(freq, int) and freq > 0
+    ]
+    single_char_freq.sort(key=lambda item: (-item[1], item[0]))
+    return {
+        char: rank
+        for rank, (char, _) in enumerate(single_char_freq[:common_char_table_size])
+    }
+
+
+@lru_cache(maxsize=1)
+def get_common_words_by_last_char():
+    import jieba
+
+    jieba.initialize()
+    common_words = [
+        (word, freq)
+        for word, freq in jieba.dt.FREQ.items()
+        if _is_cjk_word(word) and isinstance(freq, int) and freq > 0
+    ]
+    common_words.sort(key=lambda item: (-item[1], -len(item[0]), item[0]))
+
+    words_by_last_char = {}
+    for rank, (word, freq) in enumerate(common_words[:common_word_table_size]):
+        words_by_last_char.setdefault(word[-1], []).append((word, rank, freq))
+
+    return {
+        char: tuple(entries)
+        for char, entries in words_by_last_char.items()
+    }
+
+
+def _best_common_word_score(context, candidate, common_words_by_last_char):
+    best_score = (-1, -1, -common_word_table_size)
+    for word, rank, freq in common_words_by_last_char.get(candidate, ()):
+        prefix = word[:-1]
+        if context.endswith(prefix):
+            score = (len(word), freq, -rank)
+            if score > best_score:
+                best_score = score
+    return best_score
+
+
+def _best_context_word_freq(context, candidate, freq_table):
+    best_freq = 0
+    for start in range(len(context) + 1):
+        word = context[start:] + candidate
+        freq = freq_table.get(word, 0)
+        if freq > best_freq:
+            best_freq = freq
+    return best_freq
 
 
 def _rows_to_output_ids(rows, sorted_hashes, sorted_indices):
@@ -563,6 +650,9 @@ class tokenizer():
     def detokenize(self, id_list): # id list [26 , 15 , 23 ...]
         import jieba
         jieba.initialize()  # 確保 jieba.dt.FREQ 已載入
+        common_char_rank = get_common_char_rank()
+        common_words_by_last_char = get_common_words_by_last_char()
+        freq_table = jieba.dt.FREQ
 
         raw = self.id_decode(id_list)
 
@@ -591,21 +681,28 @@ class tokenizer():
                 result.append(item)
                 continue
 
+            candidates = list(dict.fromkeys(
+                cand for cand in item
+                if isinstance(cand, str) and len(cand) == 1
+            ))
+            if not candidates:
+                result.append(item[0] if item else "")
+                continue
+
             # 往前抓最近幾個已確定的單一字元當作組詞的上下文
             context = "".join(c for c in result[-12:] if isinstance(c, str) and len(c) == 1)
 
-            best_char, best_freq, found_word = None, -1, False
-            for cand in item:
-                # 檢查 context 的各種後綴 + cand 是否為 jieba 詞典中的詞
-                for start in range(len(context)):
-                    word = context[start:] + cand
-                    freq = jieba.dt.FREQ.get(word)
-                    if freq and freq > best_freq:
-                        best_freq, best_char, found_word = freq, cand, True
+            def candidate_sort_key(cand):
+                return (
+                    _best_common_word_score(context, cand, common_words_by_last_char),
+                    _best_context_word_freq(context, cand, freq_table),
+                    int(cand in common_char_rank),
+                    freq_table.get(cand, 0),
+                    int(_is_basic_cjk_char(cand)),
+                    -common_char_rank.get(cand, common_char_table_size),
+                )
 
-            if not found_word:
-                # 沒有任何候選字能跟上下文組詞，退回比較單字詞頻
-                best_char = max(item, key=lambda c: jieba.dt.FREQ.get(c, 0))
+            best_char = max(candidates, key=candidate_sort_key)
 
             result.append(best_char)
 
