@@ -1,19 +1,32 @@
-import torch 
+import os
+import torch
 import torch.nn.functional as F 
-from cangjie_llm import tokenizer, LLM 
+from cangjie_llm import tokenizer, LLM
+from cangjie_llm.llm import (
+    CHINESE_BOS_ID,
+    CHINESE_EOS_ID,
+    CHINESE_ID_TO_CHAR,
+    CHINESE_PAD_ID,
+    CHINESE_UNK_ID,
+)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
 llm = LLM()
-checkpoint_path = "./src/cangjie_llm/best_val.pt"
+checkpoint_path = "./src/cangjie_llm/best_val_char.pt"
 prompt = ""
+decode_head = "chinese"
 decode_strategy = "top_k"
-temperature = 0.7
-top_k = 10
-repetition_penalty = 1.2
+temperature = 0.5
+top_k = 5
+repetition_penalty = 1.1
 max_token = 50
 allow_byte_tokens = False
 stop_on_eos = True
+
+if not os.path.exists(checkpoint_path):
+    checkpoint_path = "./src/cangjie_llm/best_val.pt"
+    decode_head = "cangjie"
 
 
 def output_id_for_token(token_name):
@@ -58,6 +71,22 @@ def apply_sampling_filters(logits, generated_ids):
     return logits
 
 
+def apply_chinese_sampling_filters(logits, generated_ids):
+    logits[:, [CHINESE_PAD_ID, CHINESE_BOS_ID, CHINESE_UNK_ID]] = float("-inf")
+    if repetition_penalty != 1.0:
+        for token_id in set(generated_ids):
+            token_logits = logits[:, token_id]
+            logits[:, token_id] = torch.where(
+                token_logits > 0,
+                token_logits / repetition_penalty,
+                token_logits * repetition_penalty,
+            )
+    if top_k and 0 < top_k < logits.size(-1):
+        values, _ = torch.topk(logits, top_k, dim=-1)
+        logits = logits.masked_fill(logits < values[:, [-1]], float("-inf"))
+    return logits
+
+
 def encode_prompt_to_output_ids(prompt_text):
     if not prompt_text:
         return []
@@ -73,26 +102,38 @@ if any(key.startswith("_orig_mod.") for key in state_dict):
         key.removeprefix("_orig_mod."): value
         for key, value in state_dict.items()
     }
-llm.load_state_dict(state_dict)
+llm.load_state_dict(state_dict, strict=False)
 llm.to(device)
 llm.eval()
 
-tok_id_list = [2]
-tok_id_list.extend(encode_prompt_to_output_ids(prompt))
 all_vocab = tok.all_vocab().tolist()
-eos_id = output_id_for_token("[EOS]")
+use_chinese_head = decode_head == "chinese"
+if use_chinese_head:
+    pad_id = tok.vocab["[PAD]"]
+    input_rows = [[tok.vocab["[BOS]"], pad_id, pad_id, pad_id, pad_id]]
+    input_rows.extend(tok.tokenize(prompt))
+    generated_char_ids = []
+else:
+    tok_id_list = [2]
+    tok_id_list.extend(encode_prompt_to_output_ids(prompt))
+    eos_id = output_id_for_token("[EOS]")
 
 
 with torch.inference_mode():
     for _ in range(max_token):
-        tok_list = torch.tensor(
-            [all_vocab[tok_id] for tok_id in tok_id_list],
-            dtype=torch.long,
-            device=device,
-        ).view(1, -1, 5)
-        next_tok, _ = llm(tok_list)
-        next_tok = next_tok[:, -1, :]
-        next_tok = apply_sampling_filters(next_tok, tok_id_list)
+        if use_chinese_head:
+            tok_list = torch.tensor(input_rows, dtype=torch.long, device=device).view(1, -1, 5)
+            next_tok, _ = llm(tok_list, output_head="chinese")
+            next_tok = apply_chinese_sampling_filters(next_tok[:, -1, :], generated_char_ids)
+        else:
+            tok_list = torch.tensor(
+                [all_vocab[tok_id] for tok_id in tok_id_list],
+                dtype=torch.long,
+                device=device,
+            ).view(1, -1, 5)
+            next_tok, _ = llm(tok_list)
+            next_tok = next_tok[:, -1, :]
+            next_tok = apply_sampling_filters(next_tok, tok_id_list)
         if decode_strategy == "greedy":
             next_tok_id = next_tok.argmax(dim=-1).item()
         elif decode_strategy in {"top-k", "top_k"}:
@@ -100,7 +141,15 @@ with torch.inference_mode():
             next_tok_id = torch.multinomial(probs, num_samples=1).item()
         else:
             raise ValueError(f"Unsupported decode_strategy: {decode_strategy}")
-        if stop_on_eos and next_tok_id == eos_id:
-            break
-        tok_id_list.append(next_tok_id)
-        print(tok.detokenize(tok_id_list).removeprefix("[BOS]"))
+        if use_chinese_head:
+            if stop_on_eos and next_tok_id == CHINESE_EOS_ID:
+                break
+            generated_char_ids.append(next_tok_id)
+            next_char = CHINESE_ID_TO_CHAR[next_tok_id]
+            input_rows.extend(tok.tokenize(next_char))
+            print(prompt + "".join(CHINESE_ID_TO_CHAR[i] for i in generated_char_ids))
+        else:
+            if stop_on_eos and next_tok_id == eos_id:
+                break
+            tok_id_list.append(next_tok_id)
+            print(tok.detokenize(tok_id_list).removeprefix("[BOS]"))

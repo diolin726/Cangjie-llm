@@ -12,7 +12,7 @@ import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from torch.utils.data import DataLoader, Dataset, Subset
 from cangjie_convertor import cj_encoder , cj_decoder
-from cangjie_convertor._shared import get_cj_key_fingerprint
+from cangjie_convertor._shared import get_cj_key_fingerprint, load_cj_assets
 from torch.amp import autocast
 import threading
 
@@ -39,6 +39,7 @@ checkpoint_interval = 1000
 torch_compile_mode = "default"
 return_training_logits = False
 sampled_softmax_negatives = 0
+chinese_loss_weight = 0.3
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
@@ -48,6 +49,24 @@ preprocess_chunk_rows = 10_000_000
 preprocess_workers = max(1, min(4, os.cpu_count() or 1))
 preprocess_queue_depth = max(2, preprocess_workers * 2)
 cache_format_version = 2
+
+
+def _build_chinese_vocab():
+    data_map, _, _, _, _ = load_cj_assets()
+    chars = set(data_map)
+    chars.update(chr(i) for i in range(32, 127))
+    chars.update(("\n", "\t"))
+    chars.update("，。！？：；（）《》「」『』【】“”‘’、…—～·％＋－＝／\\：")
+    id_to_char = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"] + sorted(chars)
+    return id_to_char, {char: idx for idx, char in enumerate(id_to_char)}
+
+
+CHINESE_ID_TO_CHAR, CHINESE_CHAR_TO_ID = _build_chinese_vocab()
+CHINESE_VOCAB_SIZE = len(CHINESE_ID_TO_CHAR)
+CHINESE_PAD_ID = CHINESE_CHAR_TO_ID["[PAD]"]
+CHINESE_UNK_ID = CHINESE_CHAR_TO_ID["[UNK]"]
+CHINESE_BOS_ID = CHINESE_CHAR_TO_ID["[BOS]"]
+CHINESE_EOS_ID = CHINESE_CHAR_TO_ID["[EOS]"]
 
 gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpu_count > 0 else 'cpu'
@@ -172,9 +191,12 @@ def _process_text_batch(texts):
     sorted_indices = _preprocess_state["sorted_indices"]
 
     row_parts = []
+    char_id_parts = []
     total_rows = 0
     for text in texts:
-        normalized = converter.convert(text or "")
+        normalized = unicodedata.normalize(
+            "NFKC", converter.convert(text or "")
+        ).replace("\u3000", " ")
         token_rows = tok.tokenize(normalized)
         row_count = len(token_rows) + 2
         doc_rows = np.empty((row_count, 5), dtype=np.int16)
@@ -183,16 +205,30 @@ def _process_text_batch(texts):
             doc_rows[1:-1] = np.asarray(token_rows, dtype=np.int16)
         doc_rows[-1] = eos_row
         row_parts.append(doc_rows)
+        doc_char_ids = [CHINESE_BOS_ID]
+        for char in normalized:
+            char_rows = tok.cj_encoder.encode_text_to_rows(char)
+            doc_char_ids.extend(
+                [CHINESE_CHAR_TO_ID.get(char, CHINESE_UNK_ID)] * len(char_rows)
+            )
+        doc_char_ids.append(CHINESE_EOS_ID)
+        if len(doc_char_ids) != row_count:
+            raise ValueError(
+                "中文字 target 與倉頡 rows 長度不一致："
+                f"{len(doc_char_ids)} != {row_count}"
+            )
+        char_id_parts.append(np.asarray(doc_char_ids, dtype=np.int16))
         total_rows += row_count
 
     if not row_parts:
         empty_rows = np.empty((0, 5), dtype=np.int16)
         empty_ids = np.empty((0,), dtype=np.int16)
-        return empty_rows, empty_ids
+        return empty_rows, empty_ids, empty_ids
 
     rows = np.concatenate(row_parts, axis=0) if len(row_parts) > 1 else row_parts[0]
+    char_ids = np.concatenate(char_id_parts, axis=0) if len(char_id_parts) > 1 else char_id_parts[0]
     output_ids = _rows_to_output_ids(rows, sorted_hashes, sorted_indices)
-    return rows, output_ids
+    return rows, output_ids, char_ids
 
 
 def _iter_text_batches(ds, total_rows):
@@ -219,6 +255,13 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         source_filter_mode="include",
     ):
         self.block_size = block_size
+        self.json_path = json_path
+        self.dataset_name = dataset_name
+        self.dataset_dir = dataset_dir
+        self.data_files = data_files
+        self.split = split
+        self.source_filter = source_filter
+        self.source_filter_mode = source_filter_mode
         if source_filter_mode not in {"include", "exclude"}:
             raise ValueError("source_filter_mode 必須是 'include' 或 'exclude'")
         self.cj_key_fingerprint = get_cj_key_fingerprint()
@@ -234,6 +277,7 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         )
         self.cache_meta_path = self._get_cache_meta_path(cache_path)
         self.target_cache_path = self._get_target_cache_path(cache_path)
+        self.char_target_cache_path = self._get_char_target_cache_path(cache_path)
         data_cache_valid = cache_path and os.path.exists(cache_path) and self._cache_matches_expected()
         if cache_path and os.path.exists(cache_path) and not data_cache_valid:
             print("現有 data 快取與目前資料設定不符，將重新建立")
@@ -278,11 +322,15 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     )
             print(ds[0])
             total_rows = len(ds)
-            self.data, self.target_ids = self._preprocess_dataset(ds, total_rows)
+            self.data, self.target_ids, self.char_target_ids = self._preprocess_dataset(ds, total_rows)
             print(f"預處理完成: shape={self.data.shape}, 記憶體={self.data.element_size() * self.data.nelement() / 1024**3:.2f} GB")
             print(
                 f"target ids 完成: shape={self.target_ids.shape}, "
                 f"記憶體={self.target_ids.element_size() * self.target_ids.nelement() / 1024**3:.2f} GB"
+            )
+            print(
+                f"中文字 target 完成: shape={self.char_target_ids.shape}, "
+                f"記憶體={self.char_target_ids.element_size() * self.char_target_ids.nelement() / 1024**3:.2f} GB"
             )
             if cache_path:
                 torch.save(self.data, cache_path)
@@ -290,6 +338,9 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             if self.target_cache_path:
                 torch.save(self.target_ids, self.target_cache_path)
                 print(f"已儲存 target id 快取: {self.target_cache_path}")
+            if self.char_target_cache_path:
+                torch.save(self.char_target_ids, self.char_target_cache_path)
+                print(f"已儲存中文字 target ids 快取: {self.char_target_cache_path}")
             self._write_cache_meta()
 
         if not hasattr(self, "target_ids") and self.target_cache_path and os.path.exists(self.target_cache_path) and self._cache_matches_expected():
@@ -321,6 +372,37 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 torch.save(self.target_ids, self.target_cache_path)
                 self._write_cache_meta()
                 print(f"已儲存 target id 快取: {self.target_cache_path}")
+
+        if not hasattr(self, "char_target_ids") and self.char_target_cache_path and os.path.exists(self.char_target_cache_path) and self._cache_matches_expected():
+            print(f"從快取載入中文字 target ids: {self.char_target_cache_path}")
+            self.char_target_ids = torch.load(self.char_target_cache_path, weights_only=True)
+            print(
+                f"中文字 target ids 載入完成: shape={self.char_target_ids.shape}, "
+                f"記憶體={self.char_target_ids.element_size() * self.char_target_ids.nelement() / 1024**3:.2f} GB"
+            )
+        elif not hasattr(self, "char_target_ids"):
+            self.char_target_ids = None
+
+        expected_char_target_len = len(self.data) - 1
+        if self.char_target_ids is not None and len(self.char_target_ids) != expected_char_target_len:
+            print(
+                f"中文字 target 快取長度不符，預期 {expected_char_target_len}，"
+                f"實際 {len(self.char_target_ids)}，將重新建立"
+            )
+            self.char_target_ids = None
+
+        if self.char_target_ids is None:
+            print("建立中文字 target id 快取（需要重新讀取文字資料）...")
+            ds = self._load_dataset_for_char_targets()
+            self.char_target_ids = self._preprocess_char_targets(ds, len(ds))
+            print(
+                f"中文字 target 完成: shape={self.char_target_ids.shape}, "
+                f"記憶體={self.char_target_ids.element_size() * self.char_target_ids.nelement() / 1024**3:.2f} GB"
+            )
+            if self.char_target_cache_path:
+                torch.save(self.char_target_ids, self.char_target_cache_path)
+                self._write_cache_meta()
+                print(f"已儲存中文字 target ids 快取: {self.char_target_cache_path}")
         #self.data=self.data.to(torch.long)
         #self.data.share_memory_()
 
@@ -338,6 +420,13 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         root, ext = os.path.splitext(cache_path)
         return f"{root}_target_ids{ext or '.pt'}"
 
+    @staticmethod
+    def _get_char_target_cache_path(cache_path):
+        if cache_path is None:
+            return None
+        root, ext = os.path.splitext(cache_path)
+        return f"{root}_char_target_ids{ext or '.pt'}"
+
     def _cache_matches_expected(self):
         if self.cache_meta_path is None or not os.path.exists(self.cache_meta_path):
             if self.cache_metadata.get("split") not in (None, "train"):
@@ -353,14 +442,117 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         with open(self.cache_meta_path, "w", encoding="utf-8") as f:
             json.dump(self.cache_metadata, f, ensure_ascii=False, indent=2)
 
-    def _flush_preprocess_chunk(self, temp_dir, chunk_index, row_parts, output_id_parts):
+    def _load_dataset_for_char_targets(self):
+        from datasets import load_dataset
+
+        if self.json_path is not None:
+            ds = load_dataset("json", data_files=self.json_path, split=self.split)
+        else:
+            ds = load_dataset(
+                self.dataset_name,
+                data_dir=self.dataset_dir,
+                data_files=self.data_files,
+                split=self.split,
+            )
+        if self.source_filter:
+            if self.source_filter_mode == "include":
+                ds = ds.filter(lambda row: row.get("source") == self.source_filter)
+            else:
+                ds = ds.filter(lambda row: row.get("source") != self.source_filter)
+        return ds
+
+    def _preprocess_char_targets(self, ds, total_rows):
+        temp_dir = tempfile.mkdtemp(
+            prefix="cangjie-char-preprocess-",
+            dir=os.path.dirname(os.path.abspath(self.cache_meta_path or ".")),
+        )
+        pending_results = {}
+        char_parts = []
+        chunk_records = []
+        chunk_row_count = 0
+        chunk_index = 0
+        total_token_rows = 0
+        next_batch_to_write = 0
+
+        def flush_chunk():
+            nonlocal char_parts, chunk_row_count, chunk_index
+            if not char_parts:
+                return
+            char_ids = np.concatenate(char_parts, axis=0) if len(char_parts) > 1 else char_parts[0]
+            path = os.path.join(temp_dir, f"char_chunk_{chunk_index:05d}.npy")
+            np.save(path, char_ids)
+            chunk_records.append((path, len(char_ids)))
+            chunk_index += 1
+            char_parts = []
+            chunk_row_count = 0
+
+        def consume(batch_idx, result):
+            nonlocal chunk_row_count, total_token_rows, next_batch_to_write
+            _, _, batch_char_ids = result
+            char_parts.append(batch_char_ids)
+            chunk_row_count += len(batch_char_ids)
+            total_token_rows += len(batch_char_ids)
+            processed = min((batch_idx + 1) * preprocess_batch_size, total_rows)
+            if processed % 10000 == 0 or processed == total_rows:
+                print(f"  中文 target 已處理 {processed}/{total_rows} 篇，共 {total_token_rows} tokens")
+            if chunk_row_count >= preprocess_chunk_rows:
+                flush_chunk()
+            next_batch_to_write = batch_idx + 1
+
+        try:
+            batch_iter = iter(_iter_text_batches(ds, total_rows))
+            max_workers = min(preprocess_workers, max(1, math.ceil(total_rows / preprocess_batch_size)))
+            if max_workers <= 1:
+                for batch_idx, texts in batch_iter:
+                    consume(batch_idx, _process_text_batch(texts))
+            else:
+                with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_preprocess_worker) as executor:
+                    in_flight = {}
+                    exhausted = False
+                    while not exhausted or in_flight:
+                        while not exhausted and len(in_flight) < preprocess_queue_depth:
+                            try:
+                                batch_idx, texts = next(batch_iter)
+                            except StopIteration:
+                                exhausted = True
+                                break
+                            in_flight[executor.submit(_process_text_batch, texts)] = batch_idx
+                        done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            batch_idx = in_flight.pop(future)
+                            pending_results[batch_idx] = future.result()
+                        while next_batch_to_write in pending_results:
+                            consume(next_batch_to_write, pending_results.pop(next_batch_to_write))
+
+            flush_chunk()
+            target_len = max(0, total_token_rows - 1)
+            char_target_tensor = torch.empty(target_len, dtype=torch.int16)
+            offset = 0
+            skip_first = True
+            for path, _ in chunk_records:
+                char_ids = np.load(path)
+                start = 1 if skip_first else 0
+                values = char_ids[start:]
+                char_target_tensor[offset:offset + len(values)] = torch.from_numpy(values)
+                offset += len(values)
+                skip_first = False
+            return char_target_tensor
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _flush_preprocess_chunk(
+        self, temp_dir, chunk_index, row_parts, output_id_parts, char_id_parts
+    ):
         rows = np.concatenate(row_parts, axis=0) if len(row_parts) > 1 else row_parts[0]
         output_ids = np.concatenate(output_id_parts, axis=0) if len(output_id_parts) > 1 else output_id_parts[0]
+        char_ids = np.concatenate(char_id_parts, axis=0) if len(char_id_parts) > 1 else char_id_parts[0]
         data_chunk_path = os.path.join(temp_dir, f"data_chunk_{chunk_index:05d}.npy")
         output_chunk_path = os.path.join(temp_dir, f"output_chunk_{chunk_index:05d}.npy")
+        char_chunk_path = os.path.join(temp_dir, f"char_chunk_{chunk_index:05d}.npy")
         np.save(data_chunk_path, rows)
         np.save(output_chunk_path, output_ids)
-        return data_chunk_path, output_chunk_path, len(rows)
+        np.save(char_chunk_path, char_ids)
+        return data_chunk_path, output_chunk_path, char_chunk_path, len(rows)
 
     def _preprocess_dataset(self, ds, total_rows):
         temp_dir = tempfile.mkdtemp(prefix="cangjie-preprocess-", dir=os.path.dirname(os.path.abspath(self.cache_meta_path or ".")))
@@ -368,21 +560,25 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         pending_results = {}
         row_parts = []
         output_id_parts = []
+        char_id_parts = []
         chunk_row_count = 0
         total_token_rows = 0
         chunk_index = 0
         next_batch_to_write = 0
 
         def flush_pending_chunk():
-            nonlocal row_parts, output_id_parts, chunk_row_count, chunk_index
+            nonlocal row_parts, output_id_parts, char_id_parts, chunk_row_count, chunk_index
             if not row_parts:
                 return
             chunk_records.append(
-                self._flush_preprocess_chunk(temp_dir, chunk_index, row_parts, output_id_parts)
+                self._flush_preprocess_chunk(
+                    temp_dir, chunk_index, row_parts, output_id_parts, char_id_parts
+                )
             )
             chunk_index += 1
             row_parts = []
             output_id_parts = []
+            char_id_parts = []
             chunk_row_count = 0
 
         try:
@@ -392,9 +588,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                 for batch_idx, texts in batch_iter:
                     pending_results[batch_idx] = _process_text_batch(texts)
                     while next_batch_to_write in pending_results:
-                        batch_rows, batch_output_ids = pending_results.pop(next_batch_to_write)
+                        batch_rows, batch_output_ids, batch_char_ids = pending_results.pop(next_batch_to_write)
                         row_parts.append(batch_rows)
                         output_id_parts.append(batch_output_ids)
+                        char_id_parts.append(batch_char_ids)
                         chunk_row_count += len(batch_rows)
                         total_token_rows += len(batch_rows)
                         processed = min((next_batch_to_write + 1) * preprocess_batch_size, total_rows)
@@ -422,9 +619,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                             pending_results[batch_idx] = future.result()
 
                         while next_batch_to_write in pending_results:
-                            batch_rows, batch_output_ids = pending_results.pop(next_batch_to_write)
+                            batch_rows, batch_output_ids, batch_char_ids = pending_results.pop(next_batch_to_write)
                             row_parts.append(batch_rows)
                             output_id_parts.append(batch_output_ids)
+                            char_id_parts.append(batch_char_ids)
                             chunk_row_count += len(batch_rows)
                             total_token_rows += len(batch_rows)
                             processed = min((next_batch_to_write + 1) * preprocess_batch_size, total_rows)
@@ -439,13 +637,15 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
             total_output_ids = max(0, total_token_rows - 1)
             data_tensor = torch.empty((total_token_rows, 5), dtype=torch.int16)
             target_tensor = torch.empty(total_output_ids, dtype=torch.int16)
+            char_target_tensor = torch.empty(total_output_ids, dtype=torch.int16)
 
             data_offset = 0
             target_offset = 0
             skip_first_output = True
-            for data_chunk_path, output_chunk_path, row_count in chunk_records:
+            for data_chunk_path, output_chunk_path, char_chunk_path, row_count in chunk_records:
                 rows = np.load(data_chunk_path)
                 output_ids = np.load(output_chunk_path)
+                char_ids = np.load(char_chunk_path)
                 data_tensor[data_offset:data_offset + row_count] = torch.from_numpy(rows)
                 data_offset += row_count
 
@@ -454,10 +654,13 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
                     chunk_target = output_ids[start_idx:]
                     target_len = len(chunk_target)
                     target_tensor[target_offset:target_offset + target_len] = torch.from_numpy(chunk_target)
+                    char_target_tensor[target_offset:target_offset + target_len] = torch.from_numpy(
+                        char_ids[start_idx:]
+                    )
                     target_offset += target_len
                 skip_first_output = False
 
-            return data_tensor, target_tensor
+            return data_tensor, target_tensor, char_target_tensor
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -493,12 +696,17 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
         # Return owned tensors so DataLoader workers can collate safely.
         x = self.data[idx : idx + self.block_size].clone()
         target = self.target_ids[idx : idx + self.block_size].clone()
-        return x, target
+        char_target = self.char_target_ids[idx : idx + self.block_size].clone()
+        return x, target, char_target
 
 
 def collate_cangjie_batch(batch):
-    xs, targets = zip(*batch)
-    return torch.stack(xs, dim=0), torch.stack(targets, dim=0)
+    xs, targets, char_targets = zip(*batch)
+    return (
+        torch.stack(xs, dim=0),
+        torch.stack(targets, dim=0),
+        torch.stack(char_targets, dim=0),
+    )
 
 
 class tokenizer():
@@ -863,6 +1071,19 @@ class cj_head(nn.Module):
         return self.logits(hidden)
 
 
+class chinese_head(nn.Module):
+    def __init__(self, embed_size):
+        super().__init__()
+        self.proj = nn.Linear(embed_size, CHINESE_VOCAB_SIZE)
+
+    def forward(self, hidden):
+        return self.proj(hidden)
+
+    def loss(self, hidden, target):
+        logits = self.proj(hidden).flatten(0, 1)
+        return F.cross_entropy(logits, target.to(torch.long).reshape(-1))
+
+
 class LLM(nn.Module):
     def __init__(self):
         super().__init__()
@@ -871,6 +1092,7 @@ class LLM(nn.Module):
         self.layers = nn.Sequential(*[layer(n_head, embed_size) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(embed_size)
         self.head = cj_head(self.embedding)
+        self.chinese_head = chinese_head(embed_size)
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -881,7 +1103,7 @@ class LLM(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, x, target=None):
+    def forward(self, x, target=None, chinese_target=None, output_head="cangjie"):
         B, T, C = x.shape
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
@@ -889,10 +1111,18 @@ class LLM(nn.Module):
 
         loss = None
         if target is not None:
-            loss = self.head.loss(h, target)
+            cj_loss = self.head.loss(h, target)
+            if chinese_target is None:
+                loss = cj_loss
+            else:
+                chinese_loss = self.chinese_head.loss(h, chinese_target)
+                loss = cj_loss + chinese_loss_weight * chinese_loss
             logits = self.head(h) if return_training_logits else None
         else:
-            logits = self.head(h)
+            if output_head == "chinese":
+                logits = self.chinese_head(h)
+            else:
+                logits = self.head(h)
 
         return logits, loss
 
@@ -978,13 +1208,14 @@ def evaluate_loss(model, data_loader, max_batches):
     model.eval()
     losses = []
     try:
-        for batch_idx, (x, y) in enumerate(data_loader):
+        for batch_idx, (x, y, chinese_y) in enumerate(data_loader):
             if batch_idx >= max_batches:
                 break
             x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
+            chinese_y = chinese_y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
-                _, loss = model(x, y)
+                _, loss = model(x, y, chinese_y)
             if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                 loss = loss.mean()
             losses.append(loss.detach().float().item())
@@ -1147,13 +1378,20 @@ if __name__=="__main__":
             num_workers=0,
             pin_memory=True,
         )
-    for batch , target in train_loader:
+    for batch, target, chinese_target in train_loader:
         print("Batch shape:", batch.shape)  # torch.Size([32, 256, 5])
         print("Target shape" , target.shape )  # torch.Size([32, 256])
+        print("Chinese target shape", chinese_target.shape)
         break
 
-    state_dict = load_checkpoint("./best_val.pt", map_location=device)
-    model.load_state_dict(state_dict)
+    resume_path = "./best_val_char.pt" if os.path.exists("./best_val_char.pt") else "./best_val.pt"
+    state_dict = load_checkpoint(resume_path, map_location=device)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        print(f"新模型參數將從頭初始化: {missing_keys}")
+    if unexpected_keys:
+        print(f"忽略舊 checkpoint 額外參數: {unexpected_keys}")
+    print(f"從 {resume_path} 載入共享模型權重")
     model.to(device)
     model = maybe_enable_multi_gpu(model)
     model = maybe_compile_model(model)
@@ -1170,7 +1408,7 @@ if __name__=="__main__":
         interval_steps = 0
         interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
-        for step,(x, y) in enumerate(train_loader):
+        for step,(x, y, chinese_y) in enumerate(train_loader):
             global_step = epoch * num_batches + step
             base_lr = get_lr(global_step, total_steps)
             current_lr = max(plateau_min_lr, base_lr * lr_scale)
@@ -1179,10 +1417,11 @@ if __name__=="__main__":
 
             x = x.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
+            chinese_y = chinese_y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
 
             optimizer.zero_grad(set_to_none=True)
             with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
-                logits , loss = model(x , y )
+                logits , loss = model(x , y, chinese_y)
             if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                 loss = loss.mean()
 
@@ -1216,9 +1455,9 @@ if __name__=="__main__":
                         best_val_loss = val_loss
                         save_checkpoint(
                             {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
-                            "best_val.pt"
+                            "best_val_char.pt"
                         )
-                        print(f"saved best validation checkpoint: best_val.pt ({best_val_loss:.4f})")
+                        print(f"saved best validation checkpoint: best_val_char.pt ({best_val_loss:.4f})")
                 tok = tokenizer()
                 for prompt_text in sample_prompts:
                     sample = generate_sample_text(model, tok, prompt_text, sample_max_tokens)
@@ -1244,7 +1483,7 @@ if __name__=="__main__":
             if is_checkpoint_step:
                 save_checkpoint(
                     {k: v.cpu().clone() for k, v in unwrap_model(model).state_dict().items()},
-                    f"cangjie_epoch_{epoch+1}_latest.pt"
+                    f"cangjie_char_epoch_{epoch+1}_latest.pt"
                 )
 
     # a=tokenizer()
