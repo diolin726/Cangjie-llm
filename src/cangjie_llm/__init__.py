@@ -1,2 +1,10 @@
-from .llm import LLM , tokenizer
-__all__=["tokenizer" , "LLM"]
+from .model import LLM
+from .tokenization import tokenizer
+
+__all__ = ["LLM", "main", "tokenizer"]
+
+
+def main():
+    from .training import main as training_main
+
+    return training_main()

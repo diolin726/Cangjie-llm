@@ -1,41 +1,78 @@
 import os
+import sys
 import threading
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.amp import autocast
 from torch.utils.data import DataLoader, Subset
 
-from .config import (
-    accumulation_steps,
-    batch_size,
-    best_checkpoint_path,
-    checkpoint_interval,
-    device,
-    enable_torch_compile,
-    epochs,
-    grad_clip,
-    gpu_count,
-    initial_checkpoint_path,
-    latest_checkpoint_path_template,
-    log_interval,
-    lr,
-    num_workers,
-    sample_max_tokens,
-    sample_prompts,
-    resume_checkpoint_path,
-    resume_training,
-    torch_compile_mode,
-    use_bf16_autocast,
-    validation_max_batches,
-    validation_ratio,
-    block_size,
-    get_lr,
-)
-from .dataset import CangjieDataset, collate_cangjie_batch
-from .model import LLM, cj_head, embedding
-from .tokenization import tokenizer
+if __package__ in (None, ""):
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from cangjie_llm.config import (
+        accumulation_steps,
+        batch_size,
+        best_checkpoint_path,
+        block_size,
+        checkpoint_interval,
+        device,
+        enable_torch_compile,
+        epochs,
+        get_lr,
+        gpu_count,
+        grad_clip,
+        initial_checkpoint_path,
+        latest_checkpoint_path_template,
+        log_interval,
+        lr,
+        num_workers,
+        resume_checkpoint_path,
+        resume_training,
+        sample_max_tokens,
+        sample_prompts,
+        torch_compile_mode,
+        use_bf16_autocast,
+        validation_max_batches,
+        validation_ratio,
+    )
+    from cangjie_llm.dataset import CangjieDataset, collate_cangjie_batch
+    from cangjie_llm.model import LLM, cj_head, embedding
+    from cangjie_llm.tokenization import tokenizer
+else:
+    from .config import (
+        accumulation_steps,
+        batch_size,
+        best_checkpoint_path,
+        block_size,
+        checkpoint_interval,
+        device,
+        enable_torch_compile,
+        epochs,
+        get_lr,
+        gpu_count,
+        grad_clip,
+        initial_checkpoint_path,
+        latest_checkpoint_path_template,
+        log_interval,
+        lr,
+        num_workers,
+        resume_checkpoint_path,
+        resume_training,
+        sample_max_tokens,
+        sample_prompts,
+        torch_compile_mode,
+        use_bf16_autocast,
+        validation_max_batches,
+        validation_ratio,
+    )
+    from .dataset import CangjieDataset, collate_cangjie_batch
+    from .model import LLM, cj_head, embedding
+    from .tokenization import tokenizer
 
 
 def _atomic_torch_save(obj, save_path):
@@ -454,3 +491,7 @@ __all__ = [
     "save_checkpoint",
     "unwrap_model",
 ]
+
+
+if __name__ == "__main__":
+    main()
