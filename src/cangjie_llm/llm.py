@@ -1103,20 +1103,30 @@ class LLM(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, x, target=None, chinese_target=None, output_head="cangjie"):
+    def forward(
+        self,
+        x,
+        target=None,
+        chinese_target=None,
+        output_head="cangjie",
+        return_loss_breakdown=False,
+    ):
         B, T, C = x.shape
         emb = self.embedding(x)
         pos_emb = self.position_embedding(torch.arange(T, device=x.device))
         h = self.ln_f(self.layers(emb + pos_emb))
 
         loss = None
+        loss_breakdown = None
         if target is not None:
             cj_loss = self.head.loss(h, target)
             if chinese_target is None:
                 loss = cj_loss
+                chinese_loss = None
             else:
                 chinese_loss = self.chinese_head.loss(h, chinese_target)
                 loss = cj_loss + chinese_loss_weight * chinese_loss
+            loss_breakdown = (cj_loss, chinese_loss)
             logits = self.head(h) if return_training_logits else None
         else:
             if output_head == "chinese":
@@ -1124,6 +1134,8 @@ class LLM(nn.Module):
             else:
                 logits = self.head(h)
 
+        if return_loss_breakdown:
+            return logits, loss, loss_breakdown
         return logits, loss
 
 @torch.no_grad()
@@ -1206,7 +1218,9 @@ def evaluate_loss(model, data_loader, max_batches):
         return None
     was_training = model.training
     model.eval()
-    losses = []
+    total_losses = []
+    cj_losses = []
+    chinese_losses = []
     try:
         for batch_idx, (x, y, chinese_y) in enumerate(data_loader):
             if batch_idx >= max_batches:
@@ -1215,16 +1229,25 @@ def evaluate_loss(model, data_loader, max_batches):
             y = y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             chinese_y = chinese_y.to(device=device, dtype=torch.long, non_blocking=(device == "cuda"))
             with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
-                _, loss = model(x, y, chinese_y)
+                _, loss, breakdown = model(
+                    x, y, chinese_y, return_loss_breakdown=True
+                )
             if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                 loss = loss.mean()
-            losses.append(loss.detach().float().item())
+            cj_loss, chinese_loss = breakdown
+            total_losses.append(loss.detach().float().item())
+            cj_losses.append(cj_loss.detach().float().item())
+            chinese_losses.append(chinese_loss.detach().float().item())
     finally:
         if was_training:
             model.train()
-    if not losses:
+    if not total_losses:
         return None
-    return sum(losses) / len(losses)
+    return {
+        "total": sum(total_losses) / len(total_losses),
+        "cj": sum(cj_losses) / len(cj_losses),
+        "chinese": sum(chinese_losses) / len(chinese_losses),
+    }
 
 
 @torch.no_grad()
@@ -1332,12 +1355,9 @@ if __name__=="__main__":
 
 
     train_ds = CangjieDataset(
-        dataset_name="opencsg/Fineweb-Edu-Chinese-V2.1",
+        dataset_name="zaibd/wikipedia-pretrain-zh-tw",
         split="train[:100%]",
         block_size=block_size, 
-        data_files=[f"4_5/{index:06d}.parquet" for index in range(401)],
-        source_filter="IndustryCorpus2",
-        source_filter_mode="exclude",
         cache_path="./cangjie_cached.pt"
     )
 
@@ -1417,6 +1437,8 @@ if __name__=="__main__":
     for epoch in range(epochs):
         num_batches = len(train_loader)
         running_loss = None
+        running_cj_loss = None
+        running_chinese_loss = None
         interval_steps = 0
         interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
@@ -1433,14 +1455,28 @@ if __name__=="__main__":
 
             optimizer.zero_grad(set_to_none=True)
             with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_bf16_autocast):
-                logits , loss = model(x , y, chinese_y)
+                logits, loss, breakdown = model(
+                    x, y, chinese_y, return_loss_breakdown=True
+                )
             if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                 loss = loss.mean()
 
             loss.backward()
             optimizer.step()
             loss_for_log = loss.detach()
+            cj_loss_for_log = breakdown[0].detach()
+            chinese_loss_for_log = breakdown[1].detach()
             running_loss = loss_for_log if running_loss is None else running_loss + loss_for_log
+            running_cj_loss = (
+                cj_loss_for_log
+                if running_cj_loss is None
+                else running_cj_loss + cj_loss_for_log
+            )
+            running_chinese_loss = (
+                chinese_loss_for_log
+                if running_chinese_loss is None
+                else running_chinese_loss + chinese_loss_for_log
+            )
             interval_steps += 1
             is_log_step = (step + 1) % log_interval == 0 or (step + 1) == num_batches
             is_checkpoint_step = (step + 1) % checkpoint_interval == 0 or (step + 1) == num_batches
@@ -1449,18 +1485,27 @@ if __name__=="__main__":
                 steps_per_sec = interval_steps / elapsed if elapsed > 0 else 0.0
                 progress = (step + 1) / num_batches * 100
                 avg_loss = (running_loss / interval_steps).item()
+                avg_cj_loss = (running_cj_loss / interval_steps).item()
+                avg_chinese_loss = (running_chinese_loss / interval_steps).item()
                 plateau_metric = avg_loss
                 plateau_metric_name = "train Loss"
                 print(
                     f"epoch [{epoch+1}/{epochs}] | "
                     f"step [{step+1}/{num_batches}] ({progress:.1f}%) | "
                     f"avg Loss: {avg_loss:.4f} | "
+                    f"cj: {avg_cj_loss:.4f} | "
+                    f"chinese: {avg_chinese_loss:.4f} | "
                     f"lr: {current_lr:.2e} | "
                     f"steps/s: {steps_per_sec:.2f}"
                 )
-                val_loss = evaluate_loss(model, val_loader, validation_max_batches)
-                if val_loss is not None:
-                    print(f"validation Loss: {val_loss:.4f}")
+                val_metrics = evaluate_loss(model, val_loader, validation_max_batches)
+                if val_metrics is not None:
+                    val_loss = val_metrics["total"]
+                    print(
+                        f"validation Loss: {val_loss:.4f} | "
+                        f"cj: {val_metrics['cj']:.4f} | "
+                        f"chinese: {val_metrics['chinese']:.4f}"
+                    )
                     plateau_metric = val_loss
                     plateau_metric_name = "validation Loss"
                     if val_loss < best_val_loss:
@@ -1490,6 +1535,8 @@ if __name__=="__main__":
                             f"next lr: {next_lr:.2e}"
                         )
                 running_loss = None
+                running_cj_loss = None
+                running_chinese_loss = None
                 interval_steps = 0
                 interval_start_time = time.perf_counter()
             if is_checkpoint_step:
