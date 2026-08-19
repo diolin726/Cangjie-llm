@@ -25,6 +25,7 @@ embed_size = 384
 vocab_size = 383 #需要手動調整
 batch_size = 256
 block_size = 256
+window_stride = 256
 n_head = 12
 n_layer = 12
 lr = 3e-5
@@ -491,10 +492,10 @@ class CangjieDataset(Dataset): # this part is by ai, im sorry but im trash
 
     def __len__(self):
         usable_len = min(len(self.data), len(self.target_ids))
-        return max(0, (usable_len - self.block_size) * 2 // self.block_size)
+        return max(0, (usable_len - self.block_size) // window_stride + 1)
 
     def __getitem__(self, idx):
-        idx = idx * self.block_size // 2
+        idx = idx * window_stride
         # Return owned tensors so DataLoader workers can collate safely.
         x = self.data[idx : idx + self.block_size].clone()
         target = self.target_ids[idx : idx + self.block_size].clone()
