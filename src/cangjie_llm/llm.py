@@ -1104,12 +1104,9 @@ if __name__=="__main__":
 
 
     train_ds = CangjieDataset(
-        dataset_name="opencsg/Fineweb-Edu-Chinese-V2.1",
+        dataset_name="zaibd/wikipedia-pretrain-zh-tw",
         split="train[:100%]",
         block_size=block_size, 
-        data_files=[f"4_5/{index:06d}.parquet" for index in range(401)],
-        source_filter="IndustryCorpus2",
-        source_filter_mode="exclude",
         cache_path="./cangjie_cached.pt"
     )
 
