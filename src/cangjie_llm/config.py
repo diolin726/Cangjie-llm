@@ -7,8 +7,9 @@ import torch
 torch.manual_seed(67)  # 676767
 
 # ===== 可調參數 =====
-dropout = 0.1
+dropout = 0.05
 embed_size = 384
+ffn_hidden_size = (embed_size * 8) // 3
 vocab_size = 383  # 需要手動調整
 batch_size = 256
 accumulation_steps = 8
@@ -17,6 +18,7 @@ num_workers = 8
 block_size = 256
 window_stride = 256
 n_head = 12
+n_kv_head = 6
 n_layer = 12
 rope_theta = 1e6
 lr = 3e-5
@@ -99,6 +101,7 @@ __all__ = [
     "embed_size",
     "enable_torch_compile",
     "epochs",
+    "ffn_hidden_size",
     "get_lr",
     "grad_clip",
     "gpu_count",
@@ -108,6 +111,7 @@ __all__ = [
     "lr",
     "min_lr",
     "n_head",
+    "n_kv_head",
     "n_layer",
     "num_workers",
     "plateau_factor",

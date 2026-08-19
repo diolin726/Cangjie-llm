@@ -6,7 +6,9 @@ from .config import (
     block_size,
     dropout,
     embed_size,
+    ffn_hidden_size,
     n_head,
+    n_kv_head,
     n_layer,
     return_training_logits,
     rope_theta,
@@ -73,77 +75,38 @@ class embedding(nn.Module):
         return torch.where(is_cj.unsqueeze(-1), cj_emb, non_cj_emb)
 
 
-class Head(nn.Module):
-    def __init__(self, head_size):
-        super().__init__()
-        self.query = nn.Linear(embed_size, head_size, bias=False)
-        self.value = nn.Linear(embed_size, head_size, bias=False)
-        self.key = nn.Linear(embed_size, head_size, bias=False)
-
-    def forward(self, x):
-        q = self.query(x)
-        v = self.value(x)
-        k = self.key(x)
-        return F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            is_causal=True,
-            dropout_p=dropout if self.training else 0.0,
-        )
-
-
 class Mutihead(nn.Module):
-    def __init__(self, n_head, head_size, embed_size):
+    def __init__(self, n_head, n_kv_head, head_size, embed_size):
         super().__init__()
+        if n_head % n_kv_head != 0:
+            raise ValueError("n_head 必須能被 n_kv_head 整除")
         self.n_head = n_head
+        self.n_kv_head = n_kv_head
         self.head_size = head_size
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(n_head)])
+        self.q_per_kv = n_head // n_kv_head
+        self.query = nn.Linear(embed_size, head_size * n_head, bias=False)
+        self.key = nn.Linear(embed_size, head_size * n_kv_head, bias=False)
+        self.value = nn.Linear(embed_size, head_size * n_kv_head, bias=False)
         self.proj = nn.Linear(head_size * n_head, embed_size, bias=False)
         self.dropout = nn.Dropout(dropout)
-        self.register_buffer("_packed_qkv_weight", torch.empty(0), persistent=False)
-        self._packed_qkv_versions = None
         freqs_cos, freqs_sin = precompute_freqs_cis(head_size, block_size, rope_theta)
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)
 
-    def _get_packed_qkv_weight(self):
-        if self.training and torch.is_grad_enabled():
-            q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
-            k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
-            v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
-            return torch.cat((q_weight, k_weight, v_weight), dim=0)
-
-        current_versions = tuple(
-            weight._version
-            for head in self.heads
-            for weight in (head.query.weight, head.key.weight, head.value.weight)
-        )
-        first_weight = self.heads[0].query.weight
-        needs_refresh = (
-            self._packed_qkv_weight.numel() == 0
-            or self._packed_qkv_versions != current_versions
-            or self._packed_qkv_weight.device != first_weight.device
-            or self._packed_qkv_weight.dtype != first_weight.dtype
-        )
-        if needs_refresh:
-            q_weight = torch.cat([head.query.weight for head in self.heads], dim=0)
-            k_weight = torch.cat([head.key.weight for head in self.heads], dim=0)
-            v_weight = torch.cat([head.value.weight for head in self.heads], dim=0)
-            self._packed_qkv_weight = torch.cat((q_weight, k_weight, v_weight), dim=0).detach()
-            self._packed_qkv_versions = current_versions
-        return self._packed_qkv_weight
-
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
-        qkv = F.linear(x, self._get_packed_qkv_weight())
-        q, k, v = qkv.split(self.n_head * self.head_size, dim=-1)
+        q = self.query(x)
+        k = self.key(x)
+        v = self.value(x)
 
         q = q.view(batch_size, seq_len, self.n_head, self.head_size).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.n_head, self.head_size).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.n_head, self.head_size).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.n_kv_head, self.head_size).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.n_kv_head, self.head_size).transpose(1, 2)
         q = apply_rotary_emb(q, self.freqs_cos, self.freqs_sin)
         k = apply_rotary_emb(k, self.freqs_cos, self.freqs_sin)
+        if self.q_per_kv > 1:
+            k = k.repeat_interleave(self.q_per_kv, dim=1)
+            v = v.repeat_interleave(self.q_per_kv, dim=1)
 
         out = F.scaled_dot_product_attention(
             q,
@@ -160,15 +123,14 @@ class Mutihead(nn.Module):
 class FF(nn.Module):
     def __init__(self, embed_size):
         super().__init__()
-        self.ff = nn.Sequential(
-            nn.Linear(embed_size, embed_size * 4),
-            nn.SiLU(),
-            nn.Linear(embed_size * 4, embed_size),
-            nn.Dropout(dropout),
-        )
+        self.gate_proj = nn.Linear(embed_size, ffn_hidden_size, bias=False)
+        self.up_proj = nn.Linear(embed_size, ffn_hidden_size, bias=False)
+        self.down_proj = nn.Linear(ffn_hidden_size, embed_size, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.ff(x)
+        gated = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        return self.dropout(self.down_proj(gated))
 
 
 class layer(nn.Module):
@@ -176,7 +138,7 @@ class layer(nn.Module):
         super().__init__()
         assert embed_size % n_head == 0, "embed_size 必須能被 n_head 整除"
         head_size = embed_size // n_head
-        self.mh = Mutihead(n_head, head_size, embed_size)
+        self.mh = Mutihead(n_head, n_kv_head, head_size, embed_size)
         self.ff = FF(embed_size)
         self.ln1 = RMSNorm(embed_size)
         self.ln2 = RMSNorm(embed_size)
