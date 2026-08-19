@@ -1384,14 +1384,29 @@ if __name__=="__main__":
         print("Chinese target shape", chinese_target.shape)
         break
 
-    resume_path = "./best_val_char.pt" if os.path.exists("./best_val_char.pt") else "./best_val.pt"
-    state_dict = load_checkpoint(resume_path, map_location=device)
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    if missing_keys:
-        print(f"新模型參數將從頭初始化: {missing_keys}")
-    if unexpected_keys:
-        print(f"忽略舊 checkpoint 額外參數: {unexpected_keys}")
-    print(f"從 {resume_path} 載入共享模型權重")
+    resume_path = next(
+        (
+            path
+            for path in (
+                "./best_val_char.pt",
+                "./best_val.pt",
+                "./src/cangjie_llm/best_val_char.pt",
+                "./src/cangjie_llm/best_val.pt",
+            )
+            if os.path.exists(path)
+        ),
+        None,
+    )
+    if resume_path is None:
+        print("找不到 checkpoint，將從隨機初始化開始訓練")
+    else:
+        state_dict = load_checkpoint(resume_path, map_location=device)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            print(f"新模型參數將從頭初始化: {missing_keys}")
+        if unexpected_keys:
+            print(f"忽略舊 checkpoint 額外參數: {unexpected_keys}")
+        print(f"從 {resume_path} 載入共享模型權重")
     model.to(device)
     model = maybe_enable_multi_gpu(model)
     model = maybe_compile_model(model)
