@@ -54,6 +54,8 @@ cache_format_version = 3
 common_char_table_size = 3500
 common_word_table_size = 20000
 common_word_max_length = 4
+detokenize_beam_size = 4
+detokenize_context_window = 12
 
 # Remove regex backreference remnants such as ``\1`` or ``\123`` before tokenization.
 training_escape_pattern = re.compile(r"\\[1-9][0-9]*")
@@ -222,6 +224,36 @@ def _best_context_word_freq(context, candidate, freq_table):
         if freq > best_freq:
             best_freq = freq
     return best_freq
+
+
+def _candidate_local_score(context, candidate, common_words_by_last_char, freq_table, common_char_rank):
+    common_word_score = _best_common_word_score(context, candidate, common_words_by_last_char)
+    if common_word_score[0] < 0:
+        common_word_score = (0, 0, 0)
+    return (
+        common_word_score[0],
+        common_word_score[1],
+        common_word_score[2],
+        _best_context_word_freq(context, candidate, freq_table),
+        int(candidate in common_char_rank),
+        freq_table.get(candidate, 0),
+        int(_is_basic_cjk_char(candidate)),
+        -common_char_rank.get(candidate, common_char_table_size),
+    )
+
+
+def _add_score_tuple(left, right):
+    return tuple(a + b for a, b in zip(left, right))
+
+
+def _context_from_tokens(tokens, limit):
+    chars = [
+        token for token in tokens
+        if isinstance(token, str) and len(token) == 1
+    ]
+    if limit <= 0:
+        return "".join(chars)
+    return "".join(chars[-limit:])
 
 
 def _rows_to_output_ids(rows, sorted_hashes, sorted_indices):
@@ -674,11 +706,14 @@ class tokenizer():
             merged.append(item)
             i += 1
 
-        # 用結巴消歧倉頡同碼字
-        result = []
+        # 用 beam search 消歧倉頡同碼字，避免逐字 greedy 太早定案。
+        beams = [((0, 0, 0, 0, 0, 0, 0, 0), [])]
         for item in merged:
             if not isinstance(item, list):
-                result.append(item)
+                for beam_idx, (score, tokens) in enumerate(beams):
+                    next_tokens = list(tokens)
+                    next_tokens.append(item)
+                    beams[beam_idx] = (score, next_tokens)
                 continue
 
             candidates = list(dict.fromkeys(
@@ -686,27 +721,42 @@ class tokenizer():
                 if isinstance(cand, str) and len(cand) == 1
             ))
             if not candidates:
-                result.append(item[0] if item else "")
+                fallback = item[0] if item else ""
+                for beam_idx, (score, tokens) in enumerate(beams):
+                    next_tokens = list(tokens)
+                    next_tokens.append(fallback)
+                    beams[beam_idx] = (score, next_tokens)
                 continue
 
-            # 往前抓最近幾個已確定的單一字元當作組詞的上下文
-            context = "".join(c for c in result[-12:] if isinstance(c, str) and len(c) == 1)
+            expanded_beams = []
+            for score, tokens in beams:
+                context = _context_from_tokens(tokens, detokenize_context_window)
+                for cand in candidates:
+                    local_score = _candidate_local_score(
+                        context,
+                        cand,
+                        common_words_by_last_char,
+                        freq_table,
+                        common_char_rank,
+                    )
+                    next_tokens = list(tokens)
+                    next_tokens.append(cand)
+                    expanded_beams.append((_add_score_tuple(score, local_score), next_tokens))
 
-            def candidate_sort_key(cand):
-                return (
-                    _best_common_word_score(context, cand, common_words_by_last_char),
-                    _best_context_word_freq(context, cand, freq_table),
-                    int(cand in common_char_rank),
-                    freq_table.get(cand, 0),
-                    int(_is_basic_cjk_char(cand)),
-                    -common_char_rank.get(cand, common_char_table_size),
-                )
+            deduped_beams = {}
+            for score, tokens in expanded_beams:
+                text_key = "".join(tokens)
+                prev = deduped_beams.get(text_key)
+                if prev is None or score > prev[0]:
+                    deduped_beams[text_key] = (score, tokens)
 
-            best_char = max(candidates, key=candidate_sort_key)
+            beams = sorted(
+                deduped_beams.values(),
+                key=lambda beam: beam[0],
+                reverse=True,
+            )[:detokenize_beam_size]
 
-            result.append(best_char)
-
-        return "".join(result)
+        return "".join(beams[0][1]) if beams else ""
 
 class embedding(nn.Module):
     def __init__(self, vocab_size, embed_size):
