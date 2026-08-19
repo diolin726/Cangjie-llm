@@ -1230,26 +1230,23 @@ def evaluate_loss(model, data_loader, max_batches):
 @torch.no_grad()
 def generate_sample_text(model, tok, prompt_text, max_tokens):
     was_training = model.training
-    base_model = unwrap_model(model)
     model.eval()
     try:
-        tok_id_list = [2]
-        tok_id_list.extend(encode_prompt_to_output_ids(prompt_text, tok, base_model.head, device))
-        all_vocab = tok.all_vocab().tolist()
-        eos_id = output_id_for_token(tok, "[EOS]")
+        pad_id = tok.vocab["[PAD]"]
+        input_rows = [[tok.vocab["[BOS]"], pad_id, pad_id, pad_id, pad_id]]
+        input_rows.extend(tok.tokenize(prompt_text))
+        generated_char_ids = []
         for _ in range(max_tokens):
-            tok_list = torch.tensor(
-                [all_vocab[tok_id] for tok_id in tok_id_list],
-                dtype=torch.long,
-                device=device,
-            ).view(1, -1, 5)
-            next_tok, _ = model(tok_list)
-            next_tok = apply_generation_filters(next_tok[:, -1, :], tok, tok_id_list)
+            tok_list = torch.tensor(input_rows, dtype=torch.long, device=device).view(1, -1, 5)
+            next_tok, _ = model(tok_list, output_head="chinese")
+            next_tok = next_tok[:, -1, :]
+            next_tok[:, [CHINESE_PAD_ID, CHINESE_BOS_ID, CHINESE_UNK_ID]] = float("-inf")
             next_tok_id = next_tok.argmax(dim=-1).item()
-            if eos_id is not None and next_tok_id == eos_id:
+            if next_tok_id == CHINESE_EOS_ID:
                 break
-            tok_id_list.append(next_tok_id)
-        return tok.detokenize(tok_id_list).removeprefix("[BOS]")
+            generated_char_ids.append(next_tok_id)
+            input_rows.extend(tok.tokenize(CHINESE_ID_TO_CHAR[next_tok_id]))
+        return prompt_text + "".join(CHINESE_ID_TO_CHAR[idx] for idx in generated_char_ids)
     finally:
         if was_training:
             model.train()
