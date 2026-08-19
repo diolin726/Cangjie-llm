@@ -586,7 +586,7 @@ class tokenizer():
                 continue
 
             # 往前抓最近幾個已確定的單一字元當作組詞的上下文
-            context = "".join(c for c in result[-4:] if isinstance(c, str) and len(c) == 1)
+            context = "".join(c for c in result[-8:] if isinstance(c, str) and len(c) == 1)
 
             best_char, best_freq, found_word = None, -1, False
             for cand in item:
