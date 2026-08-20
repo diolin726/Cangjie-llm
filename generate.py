@@ -1,6 +1,8 @@
-import torch 
-import torch.nn.functional as F 
-from cangjie_llm import tokenizer, LLM 
+import sys
+
+import torch
+import torch.nn.functional as F
+from cangjie_llm import tokenizer, LLM
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = tokenizer()
@@ -8,9 +10,9 @@ llm = LLM()
 checkpoint_path = "./src/cangjie_llm/best_val.pt"
 prompt = ""
 decode_strategy = "top_k"
-temperature = 0.7
+temperature = 0.8
 top_k = 10
-repetition_penalty = 1.2
+repetition_penalty = 1.15
 max_token = 50
 allow_byte_tokens = False
 stop_on_eos = True
@@ -81,6 +83,7 @@ tok_id_list = [2]
 tok_id_list.extend(encode_prompt_to_output_ids(prompt))
 all_vocab = tok.all_vocab().tolist()
 eos_id = output_id_for_token("[EOS]")
+last_text = ""
 
 
 with torch.inference_mode():
@@ -103,4 +106,18 @@ with torch.inference_mode():
         if stop_on_eos and next_tok_id == eos_id:
             break
         tok_id_list.append(next_tok_id)
-        print(tok.detokenize(tok_id_list).removeprefix("[BOS]"))
+        current_text = tok.detokenize(tok_id_list).removeprefix("[BOS]")
+        if current_text.startswith(last_text):
+            delta = current_text[len(last_text):]
+            if delta:
+                sys.stdout.write(delta)
+                sys.stdout.flush()
+        else:
+            if last_text:
+                sys.stdout.write("\n")
+            sys.stdout.write(current_text)
+            sys.stdout.flush()
+        last_text = current_text
+
+if last_text:
+    sys.stdout.write("\n")

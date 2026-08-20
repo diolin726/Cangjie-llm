@@ -38,6 +38,7 @@ def _normalize_cache_value(value):
 
 def _build_cache_metadata(
     dataset_name,
+    dataset_mix,
     dataset_dir,
     data_files,
     json_path,
@@ -49,6 +50,7 @@ def _build_cache_metadata(
     return {
         "cache_format_version": cache_format_version,
         "dataset_name": dataset_name,
+        "dataset_mix": _normalize_cache_value(dataset_mix),
         "dataset_dir": dataset_dir,
         "data_files": _normalize_cache_value(data_files),
         "json_path": json_path,
@@ -157,6 +159,7 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
         self,
         json_path=None,
         dataset_name=None,
+        dataset_mix=None,
         dataset_dir=None,
         data_files=None,
         split="train",
@@ -171,6 +174,7 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
         self.cj_key_fingerprint = get_cj_key_fingerprint()
         self.cache_metadata = _build_cache_metadata(
             dataset_name=dataset_name,
+            dataset_mix=dataset_mix,
             dataset_dir=dataset_dir,
             data_files=data_files,
             json_path=json_path,
@@ -195,10 +199,48 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
             )
         else:
             print("首次預處理（後續會從快取載入）...")
-            from datasets import load_dataset
+            from datasets import interleave_datasets, load_dataset
 
             if json_path is not None:
                 ds = load_dataset("json", data_files=json_path, split=split)
+            elif dataset_mix:
+                loaded_datasets = []
+                weights = []
+                for mix_item in dataset_mix:
+                    mix_name = mix_item["name"]
+                    mix_split = mix_item.get("split", split)
+                    mix_dataset_dir = mix_item.get("dataset_dir")
+                    mix_data_files = mix_item.get("data_files")
+                    mix_weight = float(mix_item.get("weight", 1.0))
+                    loaded = load_dataset(
+                        mix_name,
+                        data_dir=mix_dataset_dir,
+                        data_files=mix_data_files,
+                        split=mix_split,
+                    )
+                    print(
+                        f"載入混合資料集: {mix_name} | split={mix_split} | "
+                        f"weight={mix_weight:.3f} | rows={len(loaded):,}"
+                    )
+                    loaded_datasets.append(loaded)
+                    weights.append(mix_weight)
+                weight_sum = sum(weights)
+                if weight_sum <= 0:
+                    raise ValueError("dataset_mix 的 weight 總和必須大於 0")
+                probabilities = [weight / weight_sum for weight in weights]
+                ds = interleave_datasets(
+                    loaded_datasets,
+                    probabilities=probabilities,
+                    seed=67,
+                    stopping_strategy="all_exhausted",
+                )
+                print(
+                    "資料集加權混合: "
+                    + ", ".join(
+                        f"{item['name']}={prob:.1%}"
+                        for item, prob in zip(dataset_mix, probabilities)
+                    )
+                )
             else:
                 ds = load_dataset(
                     dataset_name,

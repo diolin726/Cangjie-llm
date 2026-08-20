@@ -21,6 +21,7 @@ if __package__ in (None, ""):
         block_size,
         checkpoint_interval,
         dataset_cache_path,
+        dataset_mix,
         dataset_name,
         dataset_split,
         device,
@@ -54,6 +55,7 @@ else:
         block_size,
         checkpoint_interval,
         dataset_cache_path,
+        dataset_mix,
         dataset_name,
         dataset_split,
         device,
@@ -332,6 +334,7 @@ def main():
 
     train_ds = CangjieDataset(
         dataset_name=dataset_name,
+        dataset_mix=dataset_mix,
         split=dataset_split,
         block_size=block_size,
         cache_path=dataset_cache_path,

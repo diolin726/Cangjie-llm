@@ -37,15 +37,33 @@ sampled_softmax_negatives = 0
 dataset_name = "yuhuanstudio/wikipedia-zh-tw"
 dataset_split = "train[:100%]"
 dataset_cache_path = "./cangjie_cached.pt"
+dataset_mix = [
+    {
+        "name": "yuhuanstudio/wikipedia-zh-tw",
+        "weight": 0.35
+    },
+    {
+        "name": "yuhuanstudio/OpenNewsArchive_pretrain_zhtw",
+        "weight": 0.3
+    },
+    {
+        "name": "agentlans/traditional-chinese",
+        "weight": 0.2
+    },
+    {
+        "name": "yuhuanstudio/PTT-pretrain-zhtw",
+        "weight": 0.15
+    }
+]
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
 sample_max_tokens = 24
 resume_training = False
-resume_checkpoint_path = "./training_resume.pt"
-initial_checkpoint_path = None
-best_checkpoint_path = "./best_val.pt"
-latest_checkpoint_path_template = "cangjie_epoch_{epoch}_latest.pt"
+resume_checkpoint_path = "src/cangjie_llm/training_resume.pt"
+initial_checkpoint_path = "src/cangjie_llm/best_val.pt"
+best_checkpoint_path = "src/cangjie_llm/best_val.pt"
+latest_checkpoint_path_template = "src/cangjie_llm/cangjie_epoch_{epoch}_latest.pt"
 preprocess_batch_size = 1024
 preprocess_chunk_rows = 10_000_000
 preprocess_workers = max(1, min(4, os.cpu_count() or 1))
@@ -100,6 +118,7 @@ __all__ = [
     "detokenize_beam_size",
     "detokenize_context_window",
     "dataset_cache_path",
+    "dataset_mix",
     "dataset_name",
     "dataset_split",
     "device",
