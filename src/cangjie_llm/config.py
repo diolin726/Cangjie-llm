@@ -8,18 +8,18 @@ torch.manual_seed(67)  # 676767
 
 # ===== 可調參數 =====
 dropout = 0.05
-embed_size = 384
-ffn_hidden_size = (embed_size * 8) // 3
+embed_size = 512
+ffn_hidden_size = 1344
 vocab_size = 383  # 需要手動調整
-batch_size = 256
+batch_size = 128
 accumulation_steps = 8
 grad_clip = 1.0
 num_workers = 8
 block_size = 256
-window_stride = 256
-n_head = 12
-n_kv_head = 6
-n_layer = 12
+window_stride = 128
+n_head = 8
+n_kv_head = 4
+n_layer = 10
 rope_theta = 1e6
 lr = 3e-5
 min_lr = 3e-6
@@ -34,6 +34,9 @@ checkpoint_interval = 1000
 torch_compile_mode = "default"
 return_training_logits = False
 sampled_softmax_negatives = 0
+dataset_name = "yuhuanstudio/wikipedia-zh-tw"
+dataset_split = "train[:100%]"
+dataset_cache_path = "./cangjie_cached.pt"
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
@@ -96,6 +99,9 @@ __all__ = [
     "common_word_table_size",
     "detokenize_beam_size",
     "detokenize_context_window",
+    "dataset_cache_path",
+    "dataset_name",
+    "dataset_split",
     "device",
     "dropout",
     "embed_size",

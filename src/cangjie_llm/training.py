@@ -20,6 +20,9 @@ if __package__ in (None, ""):
         best_checkpoint_path,
         block_size,
         checkpoint_interval,
+        dataset_cache_path,
+        dataset_name,
+        dataset_split,
         device,
         enable_torch_compile,
         epochs,
@@ -50,6 +53,9 @@ else:
         best_checkpoint_path,
         block_size,
         checkpoint_interval,
+        dataset_cache_path,
+        dataset_name,
+        dataset_split,
         device,
         enable_torch_compile,
         epochs,
@@ -325,10 +331,10 @@ def main():
     ], dtype=torch.int16)))
 
     train_ds = CangjieDataset(
-        dataset_name="zaibd/wikipedia-pretrain-zh-tw",
-        split="train[:100%]",
+        dataset_name=dataset_name,
+        split=dataset_split,
         block_size=block_size,
-        cache_path="./cangjie_cached.pt",
+        cache_path=dataset_cache_path,
     )
 
     dataset_len = len(train_ds)
