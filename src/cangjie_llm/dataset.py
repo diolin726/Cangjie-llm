@@ -612,7 +612,7 @@ class StreamingCangjieDataset(IterableDataset):
     def set_epoch(self, epoch):
         self.epoch = epoch
 
-    def _build_stream(self):
+    def _build_stream(self, worker_id=0, num_workers=1):
         ds = _load_source_dataset(
             json_path=self.json_path,
             dataset_name=self.dataset_name,
@@ -628,15 +628,21 @@ class StreamingCangjieDataset(IterableDataset):
             source_filter_mode=self.source_filter_mode,
             streaming=True,
         )
+        if num_workers > 1:
+            # Give each worker a separate source slice before it shuffles and tokenizes.
+            ds = ds.shard(num_shards=num_workers, index=worker_id)
         if self.shuffle_buffer and self.shuffle_buffer > 0:
             ds = ds.shuffle(
-                seed=self.seed + self.epoch,
+                seed=self.seed + self.epoch + worker_id,
                 buffer_size=self.shuffle_buffer,
             )
         return ds
 
     def __iter__(self):
-        ds = self._build_stream()
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 0
+        num_workers = worker_info.num_workers if worker_info is not None else 1
+        ds = self._build_stream(worker_id=worker_id, num_workers=num_workers)
 
         row_buffer = np.empty((0, 5), dtype=np.int16)
         output_buffer = np.empty((0,), dtype=np.int16)

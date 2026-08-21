@@ -41,6 +41,7 @@ if __package__ in (None, ""):
         sample_max_tokens,
         sample_prompts,
         streaming_shuffle_buffer,
+        streaming_num_workers,
         streaming_steps_per_epoch,
         streaming_text_batch_size,
         torch_compile_mode,
@@ -83,6 +84,7 @@ else:
         sample_max_tokens,
         sample_prompts,
         streaming_shuffle_buffer,
+        streaming_num_workers,
         streaming_steps_per_epoch,
         streaming_text_batch_size,
         torch_compile_mode,
@@ -354,12 +356,13 @@ def main():
             text_batch_size=streaming_text_batch_size,
         )
         val_source = None
-        effective_num_workers = 0
+        effective_num_workers = streaming_num_workers
         print(
             "啟用 streaming dataset："
             f" steps_per_epoch={streaming_steps_per_epoch:,},"
             f" shuffle_buffer={streaming_shuffle_buffer:,},"
-            f" text_batch_size={streaming_text_batch_size}"
+            f" text_batch_size={streaming_text_batch_size},"
+            f" workers={effective_num_workers}"
         )
         print("Streaming 模式下停用 validation split；將只記錄 training loss")
     else:
@@ -408,10 +411,15 @@ def main():
             num_workers=0,
             pin_memory=True,
         )
-    for batch, target in train_loader:
-        print("Batch shape:", batch.shape)
-        print("Target shape", target.shape)
-        break
+    if dataset_streaming:
+        # Avoid consuming and rebuilding the stream solely to inspect its fixed shape.
+        print("Batch shape:", torch.Size((batch_size, block_size, 5)))
+        print("Target shape", torch.Size((batch_size, block_size)))
+    else:
+        for batch, target in train_loader:
+            print("Batch shape:", batch.shape)
+            print("Target shape", target.shape)
+            break
 
     if resume_training and os.path.exists(resume_checkpoint_path):
         print(f"resuming training from {resume_checkpoint_path}")

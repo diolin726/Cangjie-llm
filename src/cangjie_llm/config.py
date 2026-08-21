@@ -56,9 +56,10 @@ dataset_mix = [
         "weight": 0.15
     }
 ]
-streaming_shuffle_buffer = 2_048
+streaming_shuffle_buffer = 1_024
 streaming_steps_per_epoch = 61_507
-streaming_text_batch_size = 128
+streaming_text_batch_size = 256
+streaming_num_workers = 2
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
@@ -162,6 +163,7 @@ __all__ = [
     "streaming_shuffle_buffer",
     "streaming_steps_per_epoch",
     "streaming_text_batch_size",
+    "streaming_num_workers",
     "torch_compile_mode",
     "training_escape_pattern",
     "use_bf16_autocast",
