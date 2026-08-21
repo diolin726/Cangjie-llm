@@ -3,7 +3,9 @@ import math
 import os
 import shutil
 import tempfile
+from bisect import bisect_right
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -162,6 +164,7 @@ def _load_source_dataset(
     data_files=None,
     split="train",
     streaming=False,
+    verbose=True,
 ):
     from datasets import interleave_datasets, load_dataset
 
@@ -184,7 +187,7 @@ def _load_source_dataset(
                 split=mix_split,
                 streaming=streaming,
             )
-            if streaming:
+            if streaming and verbose:
                 print(
                     f"載入混合資料集(Streaming): {mix_name} | split={mix_split} | "
                     f"weight={mix_weight:.3f}"
@@ -207,13 +210,14 @@ def _load_source_dataset(
             seed=67,
             stopping_strategy="all_exhausted",
         )
-        print(
-            "資料集加權混合: "
-            + ", ".join(
-                f"{item['name']}={prob:.1%}"
-                for item, prob in zip(dataset_mix, probabilities)
+        if verbose:
+            print(
+                "資料集加權混合: "
+                + ", ".join(
+                    f"{item['name']}={prob:.1%}"
+                    for item, prob in zip(dataset_mix, probabilities)
+                )
             )
-        )
         return ds
 
     return load_dataset(
@@ -621,6 +625,7 @@ class StreamingCangjieDataset(IterableDataset):
             data_files=self.data_files,
             split=self.split,
             streaming=True,
+            verbose=worker_id == 0,
         )
         ds = _apply_source_filter(
             ds,
@@ -642,6 +647,10 @@ class StreamingCangjieDataset(IterableDataset):
         worker_info = torch.utils.data.get_worker_info()
         worker_id = worker_info.id if worker_info is not None else 0
         num_workers = worker_info.num_workers if worker_info is not None else 1
+        if worker_id != 0:
+            from datasets import disable_progress_bars
+
+            disable_progress_bars()
         ds = self._build_stream(worker_id=worker_id, num_workers=num_workers)
 
         row_buffer = np.empty((0, 5), dtype=np.int16)
@@ -676,9 +685,188 @@ class StreamingCangjieDataset(IterableDataset):
                 consumed = 0
 
 
+class TokenShardWriter:
+    """Write aligned Cangjie input/output rows into resumable fixed-size shards."""
+
+    manifest_name = "manifest.json"
+    format_version = 1
+    bytes_per_row = 12  # Five int16 Cangjie codes plus one int16 output id.
+
+    def __init__(self, shard_dir, shard_size_mb, max_cache_gb, block_size, metadata=None):
+        self.shard_dir = Path(shard_dir)
+        self.shard_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.shard_dir / self.manifest_name
+        self.shard_size_bytes = int(shard_size_mb * 1024 * 1024)
+        self.max_rows = int(max_cache_gb * 1024 * 1024 * 1024) // self.bytes_per_row
+        self.rows_per_shard = max(1, self.shard_size_bytes // self.bytes_per_row)
+        self.block_size = block_size
+        self.manifest = self._load_or_create_manifest(metadata or {})
+        self.rows_written = int(self.manifest["rows_written"])
+        self._rows = None
+        self._target_ids = None
+        self._buffered_rows = 0
+
+    def _load_or_create_manifest(self, metadata):
+        if not self.manifest_path.exists():
+            return {
+                "format_version": self.format_version,
+                "block_size": self.block_size,
+                "rows_per_shard": self.rows_per_shard,
+                "max_rows": self.max_rows,
+                "rows_written": 0,
+                "shards": [],
+                "source": metadata,
+            }
+
+        with self.manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest.get("format_version") != self.format_version:
+            raise ValueError("token shard manifest 格式不相容，請使用新的目錄")
+        if manifest.get("block_size") != self.block_size:
+            raise ValueError("token shard 的 block_size 與目前設定不一致")
+        if manifest.get("rows_per_shard") != self.rows_per_shard:
+            raise ValueError("token shard 大小與目前設定不一致")
+        for shard in manifest.get("shards", []):
+            if not (self.shard_dir / shard["tokens"]).exists() or not (
+                self.shard_dir / shard["targets"]
+            ).exists():
+                raise FileNotFoundError(f"缺少 token shard: {shard}")
+        return manifest
+
+    @property
+    def remaining_rows(self):
+        return max(0, self.max_rows - self.rows_written - self._buffered_rows)
+
+    @property
+    def total_rows(self):
+        return self.rows_written + self._buffered_rows
+
+    def append(self, rows, target_ids):
+        if len(rows) != len(target_ids):
+            raise ValueError("rows 與 target_ids 長度必須一致")
+        offset = 0
+        while offset < len(rows) and self.remaining_rows > 0:
+            if self._rows is None:
+                self._rows = np.empty((self.rows_per_shard, 5), dtype=np.int16)
+                self._target_ids = np.empty((self.rows_per_shard,), dtype=np.int16)
+                self._buffered_rows = 0
+
+            take = min(
+                len(rows) - offset,
+                self.rows_per_shard - self._buffered_rows,
+                self.remaining_rows,
+            )
+            end = self._buffered_rows + take
+            self._rows[self._buffered_rows:end] = rows[offset:offset + take]
+            self._target_ids[self._buffered_rows:end] = target_ids[offset:offset + take]
+            self._buffered_rows = end
+            offset += take
+            if self._buffered_rows == self.rows_per_shard:
+                self._flush_shard()
+        return offset
+
+    def finish(self):
+        if self._buffered_rows:
+            self._flush_shard()
+
+    def _flush_shard(self):
+        shard_index = len(self.manifest["shards"])
+        token_name = f"shard_{shard_index:05d}_tokens.npy"
+        target_name = f"shard_{shard_index:05d}_targets.npy"
+        token_path = self.shard_dir / token_name
+        target_path = self.shard_dir / target_name
+        token_tmp_path = self.shard_dir / f".{token_name}.tmp"
+        target_tmp_path = self.shard_dir / f".{target_name}.tmp"
+        row_count = self._buffered_rows
+        with token_tmp_path.open("wb") as handle:
+            np.save(handle, self._rows[:row_count])
+        with target_tmp_path.open("wb") as handle:
+            np.save(handle, self._target_ids[:row_count])
+        os.replace(token_tmp_path, token_path)
+        os.replace(target_tmp_path, target_path)
+        self.manifest["shards"].append(
+            {"tokens": token_name, "targets": target_name, "rows": row_count}
+        )
+        self.rows_written += row_count
+        self.manifest["rows_written"] = self.rows_written
+        self._write_manifest()
+        self._rows = None
+        self._target_ids = None
+        self._buffered_rows = 0
+
+    def _write_manifest(self):
+        tmp_path = self.manifest_path.with_suffix(".json.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(self.manifest, handle, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, self.manifest_path)
+
+
+class TokenShardDataset(Dataset):
+    """Random-access training dataset backed by memory-mapped token shards."""
+
+    def __init__(self, shard_dir, block_size=default_block_size, stride=window_stride):
+        self.shard_dir = Path(shard_dir)
+        manifest_path = self.shard_dir / TokenShardWriter.manifest_name
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"找不到 token shard manifest: {manifest_path}")
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest.get("format_version") != TokenShardWriter.format_version:
+            raise ValueError("token shard manifest 格式不相容")
+        if manifest.get("block_size") != block_size:
+            raise ValueError("token shard 的 block_size 與目前設定不一致")
+
+        self.block_size = block_size
+        self.stride = stride
+        self.shards = manifest.get("shards", [])
+        self._counts = [
+            max(0, (int(shard["rows"]) - block_size - 1) // stride + 1)
+            for shard in self.shards
+        ]
+        self._cumulative_counts = np.cumsum(self._counts).tolist()
+        self._opened = {}
+
+    def __len__(self):
+        return self._cumulative_counts[-1] if self._cumulative_counts else 0
+
+    def __getitem__(self, index):
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        shard_index = bisect_right(self._cumulative_counts, index)
+        previous_count = self._cumulative_counts[shard_index - 1] if shard_index else 0
+        row_start = (index - previous_count) * self.stride
+        rows, target_ids = self._open_shard(shard_index)
+        x = torch.from_numpy(np.array(rows[row_start:row_start + self.block_size], copy=True))
+        target = torch.from_numpy(
+            np.array(target_ids[row_start + 1:row_start + self.block_size + 1], copy=True)
+        )
+        return x, target
+
+    def _open_shard(self, shard_index):
+        opened = self._opened.get(shard_index)
+        if opened is None:
+            shard = self.shards[shard_index]
+            rows = np.load(self.shard_dir / shard["tokens"], mmap_mode="r")
+            target_ids = np.load(self.shard_dir / shard["targets"], mmap_mode="r")
+            opened = (rows, target_ids)
+            self._opened[shard_index] = opened
+        return opened
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_opened"] = {}
+        return state
+
+
 def collate_cangjie_batch(batch):
     xs, targets = zip(*batch)
     return torch.stack(xs, dim=0), torch.stack(targets, dim=0)
 
 
-__all__ = ["CangjieDataset", "StreamingCangjieDataset", "collate_cangjie_batch"]
+__all__ = [
+    "CangjieDataset",
+    "StreamingCangjieDataset",
+    "TokenShardDataset",
+    "TokenShardWriter",
+    "collate_cangjie_batch",
+]

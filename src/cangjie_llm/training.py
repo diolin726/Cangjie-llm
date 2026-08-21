@@ -45,13 +45,16 @@ if __package__ in (None, ""):
         streaming_steps_per_epoch,
         streaming_text_batch_size,
         torch_compile_mode,
+        token_shard_dir,
         use_bf16_autocast,
+        use_token_shards,
         validation_max_batches,
         validation_ratio,
     )
     from cangjie_llm.dataset import (
         CangjieDataset,
         StreamingCangjieDataset,
+        TokenShardDataset,
         collate_cangjie_batch,
     )
     from cangjie_llm.model import LLM, cj_head, embedding
@@ -88,11 +91,18 @@ else:
         streaming_steps_per_epoch,
         streaming_text_batch_size,
         torch_compile_mode,
+        token_shard_dir,
         use_bf16_autocast,
+        use_token_shards,
         validation_max_batches,
         validation_ratio,
     )
-    from .dataset import CangjieDataset, StreamingCangjieDataset, collate_cangjie_batch
+    from .dataset import (
+        CangjieDataset,
+        StreamingCangjieDataset,
+        TokenShardDataset,
+        collate_cangjie_batch,
+    )
     from .model import LLM, cj_head, embedding
     from .tokenization import tokenizer
 
@@ -346,7 +356,19 @@ def main():
         [13, 23, 20, 26, 26],
     ], dtype=torch.int16)))
 
-    if dataset_streaming:
+    if use_token_shards:
+        train_ds = TokenShardDataset(
+            token_shard_dir,
+            block_size=block_size,
+        )
+        print(
+            f"使用本地 token shards：{token_shard_dir} | "
+            f"windows={len(train_ds):,}"
+        )
+        val_source = None
+        train_source = train_ds
+        effective_num_workers = num_workers
+    elif dataset_streaming:
         train_source = StreamingCangjieDataset(
             dataset_name=dataset_name,
             dataset_mix=dataset_mix,
@@ -391,10 +413,11 @@ def main():
             print("資料量不足以建立 validation split，將只記錄 training loss")
         effective_num_workers = num_workers
 
+    streaming_training = dataset_streaming and not use_token_shards
     train_loader = DataLoader(
         train_source,
         batch_size,
-        shuffle=not dataset_streaming,
+        shuffle=not streaming_training,
         collate_fn=collate_cangjie_batch,
         num_workers=effective_num_workers,
         pin_memory=True,
@@ -411,7 +434,7 @@ def main():
             num_workers=0,
             pin_memory=True,
         )
-    if dataset_streaming:
+    if streaming_training:
         # Avoid consuming and rebuilding the stream solely to inspect its fixed shape.
         print("Batch shape:", torch.Size((batch_size, block_size, 5)))
         print("Target shape", torch.Size((batch_size, block_size)))
@@ -450,7 +473,7 @@ def main():
         start_step = resume_state.get("step", 0)
         best_val_loss = resume_state.get("best_val_loss", best_val_loss)
     model.train()
-    steps_per_epoch = streaming_steps_per_epoch if dataset_streaming else len(train_loader)
+    steps_per_epoch = streaming_steps_per_epoch if streaming_training else len(train_loader)
     total_steps = epochs * steps_per_epoch
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(start_epoch, epochs):
@@ -460,9 +483,9 @@ def main():
         interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
         epoch_start_step = start_step if epoch == start_epoch else 0
-        if dataset_streaming and hasattr(train_source, "set_epoch"):
+        if streaming_training and hasattr(train_source, "set_epoch"):
             train_source.set_epoch(epoch)
-        if dataset_streaming:
+        if streaming_training:
             train_iter = iter(train_loader)
             skipped_steps = 0
             while skipped_steps < epoch_start_step:
@@ -476,7 +499,7 @@ def main():
             step_iterator = enumerate(train_loader)
 
         for step_item in step_iterator:
-            if dataset_streaming:
+            if streaming_training:
                 step = step_item
                 try:
                     x, y = next(train_iter)

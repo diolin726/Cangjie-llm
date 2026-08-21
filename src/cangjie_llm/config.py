@@ -38,6 +38,10 @@ dataset_name = "yuhuanstudio/wikipedia-zh-tw"
 dataset_split = "train"
 dataset_cache_path = "./cangjie_cached.pt"
 dataset_streaming = False
+use_token_shards = False
+token_shard_dir = "./cangjie_token_shards"
+token_shard_size_mb = 256
+token_shard_max_cache_gb = 40
 dataset_mix = [
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
@@ -59,7 +63,7 @@ dataset_mix = [
 streaming_shuffle_buffer = 1_024
 streaming_steps_per_epoch = 61_507
 streaming_text_batch_size = 256
-streaming_num_workers = 2
+streaming_num_workers = 4
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
@@ -165,8 +169,12 @@ __all__ = [
     "streaming_text_batch_size",
     "streaming_num_workers",
     "torch_compile_mode",
+    "token_shard_dir",
+    "token_shard_max_cache_gb",
+    "token_shard_size_mb",
     "training_escape_pattern",
     "use_bf16_autocast",
+    "use_token_shards",
     "validation_max_batches",
     "validation_ratio",
     "vocab_size",
