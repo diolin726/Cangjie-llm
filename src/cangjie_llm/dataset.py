@@ -605,7 +605,6 @@ class StreamingCangjieDataset(IterableDataset):
         self.text_batch_size = text_batch_size
         self.seed = seed
         self.epoch = 0
-        self._previewed = False
 
         if source_filter_mode not in {"include", "exclude"}:
             raise ValueError("source_filter_mode 必須是 'include' 或 'exclude'")
@@ -638,10 +637,6 @@ class StreamingCangjieDataset(IterableDataset):
 
     def __iter__(self):
         ds = self._build_stream()
-        if not self._previewed:
-            _preview_first_row(ds, streaming=True)
-            ds = self._build_stream()
-            self._previewed = True
 
         row_buffer = np.empty((0, 5), dtype=np.int16)
         output_buffer = np.empty((0,), dtype=np.int16)

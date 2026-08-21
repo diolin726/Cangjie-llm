@@ -56,7 +56,7 @@ dataset_mix = [
         "weight": 0.15
     }
 ]
-streaming_shuffle_buffer = 10_000
+streaming_shuffle_buffer = 2_048
 streaming_steps_per_epoch = 61_507
 streaming_text_batch_size = 128
 validation_ratio = 0.002
