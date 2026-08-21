@@ -46,6 +46,7 @@ if __package__ in (None, ""):
         streaming_text_batch_size,
         torch_compile_mode,
         token_shard_dir,
+        token_shard_validation_shards,
         use_bf16_autocast,
         use_token_shards,
         validation_max_batches,
@@ -92,6 +93,7 @@ else:
         streaming_text_batch_size,
         torch_compile_mode,
         token_shard_dir,
+        token_shard_validation_shards,
         use_bf16_autocast,
         use_token_shards,
         validation_max_batches,
@@ -141,6 +143,25 @@ def load_checkpoint(load_path, map_location):
                 key = key.removeprefix("module.")
         normalized_state_dict[key] = value
     return normalized_state_dict
+
+
+def load_model_weights(model, state_dict):
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    allowed_missing = [
+        key for key in incompatible.missing_keys
+        if key.startswith("slot_heads.")
+    ]
+    unexpected_missing = [
+        key for key in incompatible.missing_keys
+        if key not in allowed_missing
+    ]
+    if unexpected_missing or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "checkpoint 與目前模型架構不相容："
+            f"missing={unexpected_missing}, unexpected={incompatible.unexpected_keys}"
+        )
+    if allowed_missing:
+        print(f"initialized new Cangjie slot heads: {len(allowed_missing)} tensors")
 
 
 def unwrap_model(model):
@@ -357,15 +378,33 @@ def main():
     ], dtype=torch.int16)))
 
     if use_token_shards:
+        all_shards = TokenShardDataset(
+            token_shard_dir,
+            block_size=block_size,
+        )
+        val_shard_count = min(token_shard_validation_shards, all_shards.total_shard_count - 1)
         train_ds = TokenShardDataset(
             token_shard_dir,
             block_size=block_size,
+            shard_stop=-val_shard_count if val_shard_count else None,
         )
         print(
             f"使用本地 token shards：{token_shard_dir} | "
             f"windows={len(train_ds):,}"
         )
-        val_source = None
+        if val_shard_count:
+            val_source = TokenShardDataset(
+                token_shard_dir,
+                block_size=block_size,
+                shard_start=-val_shard_count,
+            )
+            print(
+                f"token shard validation：{val_shard_count} shards | "
+                f"windows={len(val_source):,}"
+            )
+        else:
+            val_source = None
+            print("token shards 數量不足，將只記錄 training loss")
         train_source = train_ds
         effective_num_workers = num_workers
     elif dataset_streaming:
@@ -447,10 +486,10 @@ def main():
     if resume_training and os.path.exists(resume_checkpoint_path):
         print(f"resuming training from {resume_checkpoint_path}")
         resume_state = load_resume_checkpoint(resume_checkpoint_path, map_location=device)
-        model.load_state_dict(resume_state["model"])
+        load_model_weights(model, resume_state["model"])
     elif initial_checkpoint_path and os.path.exists(initial_checkpoint_path):
         state_dict = load_checkpoint(initial_checkpoint_path, map_location=device)
-        model.load_state_dict(state_dict)
+        load_model_weights(model, state_dict)
         resume_state = None
     elif initial_checkpoint_path:
         print(
@@ -468,7 +507,10 @@ def main():
     start_step = 0
     best_val_loss = float("inf")
     if resume_state is not None:
-        optimizer.load_state_dict(resume_state["optimizer"])
+        try:
+            optimizer.load_state_dict(resume_state["optimizer"])
+        except ValueError:
+            print("resume optimizer 與新 slot heads 不相容；使用新的 optimizer state")
         start_epoch = resume_state.get("epoch", 0)
         start_step = resume_state.get("step", 0)
         best_val_loss = resume_state.get("best_val_loss", best_val_loss)

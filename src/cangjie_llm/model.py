@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from .config import (
     block_size,
+    cangjie_auxiliary_loss_weight,
     dropout,
     embed_size,
     ffn_hidden_size,
@@ -156,6 +157,7 @@ class cj_head(nn.Module):
         tok = tokenizer()
         codes = tok.all_vocab()
         self.register_buffer("output_codes", codes)
+        self.register_buffer("slot_pad_id", torch.tensor(tok.vocab["[PAD]"], dtype=torch.long), persistent=False)
         cj_start = tok.vocab["cj_a"]
         cj_end = tok.vocab["cj_z"]
         is_cj_output = (codes[:, 0] >= cj_start) & (codes[:, 0] <= cj_end)
@@ -196,6 +198,21 @@ class cj_head(nn.Module):
         )
         pos = torch.searchsorted(self.sorted_hashes, target_hash)
         return self.sorted_indices[pos]
+
+    def slot_targets(self, target):
+        """Map complete-code targets to five Cangjie-key targets, masking specials."""
+        target_idx = target.to(torch.long) if target.dim() == 2 else self.input_to_output_idx(target)
+        code_rows = self.output_codes.index_select(0, target_idx.reshape(-1)).view(*target_idx.shape, 5)
+        cj_start = self.emb_layer.CJ_START
+        cj_end = self.emb_layer.CJ_END
+        is_cj = (code_rows[..., 0] >= cj_start) & (code_rows[..., 0] <= cj_end)
+        slot_targets = code_rows - cj_start
+        slot_targets = torch.where(
+            code_rows == self.slot_pad_id,
+            torch.full_like(slot_targets, 26),
+            slot_targets,
+        )
+        return torch.where(is_cj.unsqueeze(-1), slot_targets, torch.full_like(slot_targets, -100))
 
     def _build_output_emb(self):
         token_weight = self.emb_layer.token_emb.weight
@@ -284,7 +301,26 @@ class LLM(nn.Module):
         self.layers = nn.Sequential(*[layer(n_head, embed_size) for _ in range(n_layer)])
         self.ln_f = RMSNorm(embed_size)
         self.head = cj_head(self.embedding)
+        self.slot_heads = nn.ModuleList([nn.Linear(embed_size, 27) for _ in range(5)])
         self.apply(self._init_weights)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        """Allow older pure-Cangjie checkpoints to omit newly added slot heads."""
+        incompatible = super().load_state_dict(state_dict, strict=False, assign=assign)
+        allowed_missing = [
+            key for key in incompatible.missing_keys
+            if key.startswith("slot_heads.")
+        ]
+        unexpected_missing = [
+            key for key in incompatible.missing_keys
+            if key not in allowed_missing
+        ]
+        if strict and (unexpected_missing or incompatible.unexpected_keys):
+            raise RuntimeError(
+                "checkpoint 與目前模型架構不相容："
+                f"missing={unexpected_missing}, unexpected={incompatible.unexpected_keys}"
+            )
+        return incompatible
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -302,6 +338,18 @@ class LLM(nn.Module):
         loss = None
         if target is not None:
             loss = self.head.loss(h, target)
+            if cangjie_auxiliary_loss_weight > 0:
+                slot_targets = self.head.slot_targets(target)
+                if torch.any(slot_targets != -100):
+                    slot_loss = sum(
+                        F.cross_entropy(
+                            slot_head(h).flatten(0, 1),
+                            slot_targets[..., slot_index].reshape(-1),
+                            ignore_index=-100,
+                        )
+                        for slot_index, slot_head in enumerate(self.slot_heads)
+                    ) / len(self.slot_heads)
+                    loss = loss + cangjie_auxiliary_loss_weight * slot_loss
             logits = self.head(h) if return_training_logits else None
         else:
             logits = self.head(h)

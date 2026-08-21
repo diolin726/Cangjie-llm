@@ -804,7 +804,14 @@ class TokenShardWriter:
 class TokenShardDataset(Dataset):
     """Random-access training dataset backed by memory-mapped token shards."""
 
-    def __init__(self, shard_dir, block_size=default_block_size, stride=window_stride):
+    def __init__(
+        self,
+        shard_dir,
+        block_size=default_block_size,
+        stride=window_stride,
+        shard_start=0,
+        shard_stop=None,
+    ):
         self.shard_dir = Path(shard_dir)
         manifest_path = self.shard_dir / TokenShardWriter.manifest_name
         if not manifest_path.exists():
@@ -818,7 +825,11 @@ class TokenShardDataset(Dataset):
 
         self.block_size = block_size
         self.stride = stride
-        self.shards = manifest.get("shards", [])
+        all_shards = manifest.get("shards", [])
+        self.total_shard_count = len(all_shards)
+        self.shards = all_shards[shard_start:shard_stop]
+        if not self.shards:
+            raise ValueError("選取的 token shards 為空")
         self._counts = [
             max(0, (int(shard["rows"]) - block_size - 1) // stride + 1)
             for shard in self.shards

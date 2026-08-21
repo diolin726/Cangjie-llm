@@ -34,6 +34,7 @@ checkpoint_interval = 1000
 torch_compile_mode = "default"
 return_training_logits = False
 sampled_softmax_negatives = 0
+cangjie_auxiliary_loss_weight = 0.15
 dataset_name = "yuhuanstudio/wikipedia-zh-tw"
 dataset_split = "train"
 dataset_cache_path = "./cangjie_cached.pt"
@@ -42,6 +43,7 @@ use_token_shards = False
 token_shard_dir = "./cangjie_token_shards"
 token_shard_size_mb = 256
 token_shard_max_cache_gb = 40
+token_shard_validation_shards = 4
 dataset_mix = [
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
@@ -120,6 +122,7 @@ __all__ = [
     "best_checkpoint_path",
     "block_size",
     "cache_format_version",
+    "cangjie_auxiliary_loss_weight",
     "checkpoint_interval",
     "common_char_table_size",
     "common_word_max_length",
@@ -172,6 +175,7 @@ __all__ = [
     "token_shard_dir",
     "token_shard_max_cache_gb",
     "token_shard_size_mb",
+    "token_shard_validation_shards",
     "training_escape_pattern",
     "use_bf16_autocast",
     "use_token_shards",
