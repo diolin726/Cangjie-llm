@@ -24,6 +24,7 @@ if __package__ in (None, ""):
         dataset_mix,
         dataset_name,
         dataset_split,
+        dataset_streaming,
         device,
         enable_torch_compile,
         epochs,
@@ -39,12 +40,19 @@ if __package__ in (None, ""):
         resume_training,
         sample_max_tokens,
         sample_prompts,
+        streaming_shuffle_buffer,
+        streaming_steps_per_epoch,
+        streaming_text_batch_size,
         torch_compile_mode,
         use_bf16_autocast,
         validation_max_batches,
         validation_ratio,
     )
-    from cangjie_llm.dataset import CangjieDataset, collate_cangjie_batch
+    from cangjie_llm.dataset import (
+        CangjieDataset,
+        StreamingCangjieDataset,
+        collate_cangjie_batch,
+    )
     from cangjie_llm.model import LLM, cj_head, embedding
     from cangjie_llm.tokenization import tokenizer
 else:
@@ -58,6 +66,7 @@ else:
         dataset_mix,
         dataset_name,
         dataset_split,
+        dataset_streaming,
         device,
         enable_torch_compile,
         epochs,
@@ -73,12 +82,15 @@ else:
         resume_training,
         sample_max_tokens,
         sample_prompts,
+        streaming_shuffle_buffer,
+        streaming_steps_per_epoch,
+        streaming_text_batch_size,
         torch_compile_mode,
         use_bf16_autocast,
         validation_max_batches,
         validation_ratio,
     )
-    from .dataset import CangjieDataset, collate_cangjie_batch
+    from .dataset import CangjieDataset, StreamingCangjieDataset, collate_cangjie_batch
     from .model import LLM, cj_head, embedding
     from .tokenization import tokenizer
 
@@ -332,39 +344,59 @@ def main():
         [13, 23, 20, 26, 26],
     ], dtype=torch.int16)))
 
-    train_ds = CangjieDataset(
-        dataset_name=dataset_name,
-        dataset_mix=dataset_mix,
-        split=dataset_split,
-        block_size=block_size,
-        cache_path=dataset_cache_path,
-    )
-
-    dataset_len = len(train_ds)
-    tentative_val_size = min(
-        max(batch_size, int(dataset_len * validation_ratio)),
-        batch_size * validation_max_batches,
-    )
-    val_size = tentative_val_size if dataset_len > tentative_val_size else 0
-    train_size = dataset_len - val_size
-    if val_size > 0:
-        train_source = Subset(train_ds, range(train_size))
-        val_source = Subset(train_ds, range(train_size, dataset_len))
-        print(f"資料切分: train={len(train_source):,} | val={len(val_source):,}")
-    else:
-        train_source = train_ds
+    if dataset_streaming:
+        train_source = StreamingCangjieDataset(
+            dataset_name=dataset_name,
+            dataset_mix=dataset_mix,
+            split=dataset_split,
+            block_size=block_size,
+            shuffle_buffer=streaming_shuffle_buffer,
+            text_batch_size=streaming_text_batch_size,
+        )
         val_source = None
-        print("資料量不足以建立 validation split，將只記錄 training loss")
+        effective_num_workers = 0
+        print(
+            "啟用 streaming dataset："
+            f" steps_per_epoch={streaming_steps_per_epoch:,},"
+            f" shuffle_buffer={streaming_shuffle_buffer:,},"
+            f" text_batch_size={streaming_text_batch_size}"
+        )
+        print("Streaming 模式下停用 validation split；將只記錄 training loss")
+    else:
+        train_ds = CangjieDataset(
+            dataset_name=dataset_name,
+            dataset_mix=dataset_mix,
+            split=dataset_split,
+            block_size=block_size,
+            cache_path=dataset_cache_path,
+        )
+
+        dataset_len = len(train_ds)
+        tentative_val_size = min(
+            max(batch_size, int(dataset_len * validation_ratio)),
+            batch_size * validation_max_batches,
+        )
+        val_size = tentative_val_size if dataset_len > tentative_val_size else 0
+        train_size = dataset_len - val_size
+        if val_size > 0:
+            train_source = Subset(train_ds, range(train_size))
+            val_source = Subset(train_ds, range(train_size, dataset_len))
+            print(f"資料切分: train={len(train_source):,} | val={len(val_source):,}")
+        else:
+            train_source = train_ds
+            val_source = None
+            print("資料量不足以建立 validation split，將只記錄 training loss")
+        effective_num_workers = num_workers
 
     train_loader = DataLoader(
         train_source,
         batch_size,
-        shuffle=True,
+        shuffle=not dataset_streaming,
         collate_fn=collate_cangjie_batch,
-        num_workers=num_workers,
+        num_workers=effective_num_workers,
         pin_memory=True,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=4,
+        persistent_workers=effective_num_workers > 0,
+        prefetch_factor=4 if effective_num_workers > 0 else None,
     )
     val_loader = None
     if val_source is not None:
@@ -385,9 +417,15 @@ def main():
         print(f"resuming training from {resume_checkpoint_path}")
         resume_state = load_resume_checkpoint(resume_checkpoint_path, map_location=device)
         model.load_state_dict(resume_state["model"])
-    elif initial_checkpoint_path:
+    elif initial_checkpoint_path and os.path.exists(initial_checkpoint_path):
         state_dict = load_checkpoint(initial_checkpoint_path, map_location=device)
         model.load_state_dict(state_dict)
+        resume_state = None
+    elif initial_checkpoint_path:
+        print(
+            f"initial checkpoint not found: {initial_checkpoint_path} | "
+            "start from scratch"
+        )
         resume_state = None
     else:
         resume_state = None
@@ -404,18 +442,41 @@ def main():
         start_step = resume_state.get("step", 0)
         best_val_loss = resume_state.get("best_val_loss", best_val_loss)
     model.train()
-    total_steps = epochs * len(train_loader)
+    steps_per_epoch = streaming_steps_per_epoch if dataset_streaming else len(train_loader)
+    total_steps = epochs * steps_per_epoch
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(start_epoch, epochs):
-        num_batches = len(train_loader)
+        num_batches = steps_per_epoch
         running_loss = None
         interval_steps = 0
         interval_start_time = time.perf_counter()
         print(f"epoch{epoch} starts")
         epoch_start_step = start_step if epoch == start_epoch else 0
-        for step, (x, y) in enumerate(train_loader):
-            if step < epoch_start_step:
-                continue
+        if dataset_streaming and hasattr(train_source, "set_epoch"):
+            train_source.set_epoch(epoch)
+        if dataset_streaming:
+            train_iter = iter(train_loader)
+            skipped_steps = 0
+            while skipped_steps < epoch_start_step:
+                try:
+                    next(train_iter)
+                except StopIteration:
+                    break
+                skipped_steps += 1
+            step_iterator = range(epoch_start_step, num_batches)
+        else:
+            step_iterator = enumerate(train_loader)
+
+        for step_item in step_iterator:
+            if dataset_streaming:
+                step = step_item
+                try:
+                    x, y = next(train_iter)
+                except StopIteration:
+                    print("Streaming 資料提早耗盡，提前結束本 epoch")
+                    break
+            else:
+                step, (x, y) = step_item
 
             global_step = epoch * num_batches + step + 1
             current_lr = get_lr(global_step, total_steps)

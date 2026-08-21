@@ -35,8 +35,9 @@ torch_compile_mode = "default"
 return_training_logits = False
 sampled_softmax_negatives = 0
 dataset_name = "yuhuanstudio/wikipedia-zh-tw"
-dataset_split = "train[:100%]"
+dataset_split = "train"
 dataset_cache_path = "./cangjie_cached.pt"
+dataset_streaming = False
 dataset_mix = [
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
@@ -55,6 +56,9 @@ dataset_mix = [
         "weight": 0.15
     }
 ]
+streaming_shuffle_buffer = 10_000
+streaming_steps_per_epoch = 61_507
+streaming_text_batch_size = 128
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = [""]
@@ -121,6 +125,7 @@ __all__ = [
     "dataset_mix",
     "dataset_name",
     "dataset_split",
+    "dataset_streaming",
     "device",
     "dropout",
     "embed_size",
@@ -154,6 +159,9 @@ __all__ = [
     "sample_max_tokens",
     "sample_prompts",
     "sampled_softmax_negatives",
+    "streaming_shuffle_buffer",
+    "streaming_steps_per_epoch",
+    "streaming_text_batch_size",
     "torch_compile_mode",
     "training_escape_pattern",
     "use_bf16_autocast",

@@ -9,6 +9,7 @@ dependencies = [
     "jieba>=0.42.1",
     "opencc>=1.4.1",
     "torch>=2.13.0",
+    "zstandard>=0.23.0",
 ]
 
 [project.scripts]

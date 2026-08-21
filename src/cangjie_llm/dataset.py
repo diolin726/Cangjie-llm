@@ -7,7 +7,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 
 from cangjie_convertor._shared import get_cj_key_fingerprint
 
@@ -154,6 +154,127 @@ def _iter_text_batches(ds, total_rows):
         yield batch_idx, texts
 
 
+def _load_source_dataset(
+    json_path=None,
+    dataset_name=None,
+    dataset_mix=None,
+    dataset_dir=None,
+    data_files=None,
+    split="train",
+    streaming=False,
+):
+    from datasets import interleave_datasets, load_dataset
+
+    if json_path is not None:
+        return load_dataset("json", data_files=json_path, split=split, streaming=streaming)
+
+    if dataset_mix:
+        loaded_datasets = []
+        weights = []
+        for mix_item in dataset_mix:
+            mix_name = mix_item["name"]
+            mix_split = mix_item.get("split", split)
+            mix_dataset_dir = mix_item.get("dataset_dir")
+            mix_data_files = mix_item.get("data_files")
+            mix_weight = float(mix_item.get("weight", 1.0))
+            loaded = load_dataset(
+                mix_name,
+                data_dir=mix_dataset_dir,
+                data_files=mix_data_files,
+                split=mix_split,
+                streaming=streaming,
+            )
+            if streaming:
+                print(
+                    f"載入混合資料集(Streaming): {mix_name} | split={mix_split} | "
+                    f"weight={mix_weight:.3f}"
+                )
+            else:
+                print(
+                    f"載入混合資料集: {mix_name} | split={mix_split} | "
+                    f"weight={mix_weight:.3f} | rows={len(loaded):,}"
+                )
+            loaded_datasets.append(loaded)
+            weights.append(mix_weight)
+
+        weight_sum = sum(weights)
+        if weight_sum <= 0:
+            raise ValueError("dataset_mix 的 weight 總和必須大於 0")
+        probabilities = [weight / weight_sum for weight in weights]
+        ds = interleave_datasets(
+            loaded_datasets,
+            probabilities=probabilities,
+            seed=67,
+            stopping_strategy="all_exhausted",
+        )
+        print(
+            "資料集加權混合: "
+            + ", ".join(
+                f"{item['name']}={prob:.1%}"
+                for item, prob in zip(dataset_mix, probabilities)
+            )
+        )
+        return ds
+
+    return load_dataset(
+        dataset_name,
+        data_dir=dataset_dir,
+        data_files=data_files,
+        split=split,
+        streaming=streaming,
+    )
+
+
+def _apply_source_filter(ds, source_filter=None, source_filter_mode="include", streaming=False):
+    if not source_filter:
+        return ds
+
+    if source_filter_mode == "include":
+        predicate = lambda row: row.get("source") == source_filter
+    else:
+        predicate = lambda row: row.get("source") != source_filter
+
+    if streaming:
+        print(f"資料來源過濾(Streaming): {source_filter_mode}={source_filter}")
+        return ds.filter(predicate)
+
+    before_filter = len(ds)
+    ds = ds.filter(predicate)
+    after_filter = len(ds)
+    print(
+        f"資料來源過濾: {source_filter_mode}={source_filter} | "
+        f"{before_filter:,} -> {after_filter:,} 筆"
+    )
+    if after_filter == 0:
+        raise ValueError(
+            f"找不到 source={source_filter!r} 的資料，"
+            "請確認資料集的 source 欄位名稱。"
+        )
+    return ds
+
+
+def _preview_first_row(ds, streaming=False):
+    if streaming:
+        sample_iter = iter(ds.take(1))
+        try:
+            print(next(sample_iter))
+        except StopIteration:
+            print("Streaming 資料集為空")
+        return
+    print(ds[0])
+
+
+def _iter_stream_text_batches(ds, batch_size):
+    texts = []
+    for row in ds:
+        texts.append((row or {}).get("text", ""))
+        if len(texts) >= batch_size:
+            yield texts
+            texts = []
+    if texts:
+        yield texts
+
+
 class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
     def __init__(
         self,
@@ -199,77 +320,27 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
             )
         else:
             print("首次預處理（後續會從快取載入）...")
-            from datasets import interleave_datasets, load_dataset
-
-            if json_path is not None:
-                ds = load_dataset("json", data_files=json_path, split=split)
-            elif dataset_mix:
-                loaded_datasets = []
-                weights = []
-                for mix_item in dataset_mix:
-                    mix_name = mix_item["name"]
-                    mix_split = mix_item.get("split", split)
-                    mix_dataset_dir = mix_item.get("dataset_dir")
-                    mix_data_files = mix_item.get("data_files")
-                    mix_weight = float(mix_item.get("weight", 1.0))
-                    loaded = load_dataset(
-                        mix_name,
-                        data_dir=mix_dataset_dir,
-                        data_files=mix_data_files,
-                        split=mix_split,
-                    )
-                    print(
-                        f"載入混合資料集: {mix_name} | split={mix_split} | "
-                        f"weight={mix_weight:.3f} | rows={len(loaded):,}"
-                    )
-                    loaded_datasets.append(loaded)
-                    weights.append(mix_weight)
-                weight_sum = sum(weights)
-                if weight_sum <= 0:
-                    raise ValueError("dataset_mix 的 weight 總和必須大於 0")
-                probabilities = [weight / weight_sum for weight in weights]
-                ds = interleave_datasets(
-                    loaded_datasets,
-                    probabilities=probabilities,
-                    seed=67,
-                    stopping_strategy="all_exhausted",
-                )
-                print(
-                    "資料集加權混合: "
-                    + ", ".join(
-                        f"{item['name']}={prob:.1%}"
-                        for item, prob in zip(dataset_mix, probabilities)
-                    )
-                )
-            else:
-                ds = load_dataset(
-                    dataset_name,
-                    data_dir=dataset_dir,
-                    data_files=data_files,
-                    split=split,
-                )
+            ds = _load_source_dataset(
+                json_path=json_path,
+                dataset_name=dataset_name,
+                dataset_mix=dataset_mix,
+                dataset_dir=dataset_dir,
+                data_files=data_files,
+                split=split,
+                streaming=False,
+            )
             if "source" in ds.column_names:
                 all_sources = sorted(
                     str(source) for source in ds.unique("source") if source is not None
                 )
                 print(f"所有 source: {all_sources}")
-            if source_filter:
-                before_filter = len(ds)
-                if source_filter_mode == "include":
-                    ds = ds.filter(lambda row: row.get("source") == source_filter)
-                else:
-                    ds = ds.filter(lambda row: row.get("source") != source_filter)
-                after_filter = len(ds)
-                print(
-                    f"資料來源過濾: {source_filter_mode}={source_filter} | "
-                    f"{before_filter:,} -> {after_filter:,} 筆"
-                )
-                if after_filter == 0:
-                    raise ValueError(
-                        f"找不到 source={source_filter!r} 的資料，"
-                        "請確認資料集的 source 欄位名稱。"
-                    )
-            print(ds[0])
+            ds = _apply_source_filter(
+                ds,
+                source_filter=source_filter,
+                source_filter_mode=source_filter_mode,
+                streaming=False,
+            )
+            _preview_first_row(ds, streaming=False)
             total_rows = len(ds)
             self.data, self.target_ids = self._preprocess_dataset(ds, total_rows)
             print(
@@ -503,9 +574,110 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
         return x, target
 
 
+class StreamingCangjieDataset(IterableDataset):
+    is_streaming = True
+
+    def __init__(
+        self,
+        json_path=None,
+        dataset_name=None,
+        dataset_mix=None,
+        dataset_dir=None,
+        data_files=None,
+        split="train",
+        block_size=default_block_size,
+        source_filter=None,
+        source_filter_mode="include",
+        shuffle_buffer=10_000,
+        text_batch_size=128,
+        seed=67,
+    ):
+        self.json_path = json_path
+        self.dataset_name = dataset_name
+        self.dataset_mix = dataset_mix
+        self.dataset_dir = dataset_dir
+        self.data_files = data_files
+        self.split = split
+        self.block_size = block_size
+        self.source_filter = source_filter
+        self.source_filter_mode = source_filter_mode
+        self.shuffle_buffer = shuffle_buffer
+        self.text_batch_size = text_batch_size
+        self.seed = seed
+        self.epoch = 0
+        self._previewed = False
+
+        if source_filter_mode not in {"include", "exclude"}:
+            raise ValueError("source_filter_mode 必須是 'include' 或 'exclude'")
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def _build_stream(self):
+        ds = _load_source_dataset(
+            json_path=self.json_path,
+            dataset_name=self.dataset_name,
+            dataset_mix=self.dataset_mix,
+            dataset_dir=self.dataset_dir,
+            data_files=self.data_files,
+            split=self.split,
+            streaming=True,
+        )
+        ds = _apply_source_filter(
+            ds,
+            source_filter=self.source_filter,
+            source_filter_mode=self.source_filter_mode,
+            streaming=True,
+        )
+        if self.shuffle_buffer and self.shuffle_buffer > 0:
+            ds = ds.shuffle(
+                seed=self.seed + self.epoch,
+                buffer_size=self.shuffle_buffer,
+            )
+        return ds
+
+    def __iter__(self):
+        ds = self._build_stream()
+        if not self._previewed:
+            _preview_first_row(ds, streaming=True)
+            ds = self._build_stream()
+            self._previewed = True
+
+        row_buffer = np.empty((0, 5), dtype=np.int16)
+        output_buffer = np.empty((0,), dtype=np.int16)
+        consumed = 0
+
+        for texts in _iter_stream_text_batches(ds, self.text_batch_size):
+            batch_rows, batch_output_ids = _process_text_batch(texts)
+            if len(batch_rows) == 0:
+                continue
+
+            if len(row_buffer) == 0:
+                row_buffer = batch_rows
+                output_buffer = batch_output_ids
+            else:
+                row_buffer = np.concatenate((row_buffer, batch_rows), axis=0)
+                output_buffer = np.concatenate((output_buffer, batch_output_ids), axis=0)
+
+            while consumed + self.block_size + 1 <= len(row_buffer):
+                x = torch.from_numpy(
+                    row_buffer[consumed:consumed + self.block_size].copy()
+                )
+                target = torch.from_numpy(
+                    output_buffer[consumed + 1:consumed + 1 + self.block_size].copy()
+                )
+                yield x, target
+                consumed += window_stride
+
+            if consumed > 0:
+                row_buffer = row_buffer[consumed:]
+                output_buffer = output_buffer[consumed:]
+                consumed = 0
+
+
 def collate_cangjie_batch(batch):
     xs, targets = zip(*batch)
     return torch.stack(xs, dim=0), torch.stack(targets, dim=0)
 
 
-__all__ = ["CangjieDataset", "collate_cangjie_batch"]
+__all__ = ["CangjieDataset", "StreamingCangjieDataset", "collate_cangjie_batch"]
