@@ -8,7 +8,7 @@ ds=_load_source_dataset(
     dataset_dir=None,
     data_files=None,
     split="train",
-    streaming=False,
+    streaming=True,
     verbose=True,
     )
 print( ds[0]["text"] )
