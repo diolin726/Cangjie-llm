@@ -1,4 +1,5 @@
 import jieba
+import json
 from collections import Counter
 from tqdm import tqdm
 from .dataset import _load_source_dataset
@@ -30,6 +31,5 @@ print("\n--- Top 20 Tokens ---")
 for word, count in top_tokens_with_freq[:20]:
     print(f"{word}: {count:,}")
 
-with open("chinese_vocab_top1000.txt", "w", encoding="utf-8") as f:
-    for token in top_tokens:
-        f.write(f"{token}\n")
+with open("chinese_vocab_top1000.json", "w", encoding="utf-8") as f:
+    json.dump(top_tokens, f, ensure_ascii=False, indent=2)
