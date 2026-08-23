@@ -1,5 +1,6 @@
 import jieba
 import json
+import unicodedata
 from collections import Counter
 from tqdm import tqdm
 from .dataset import _load_source_dataset
@@ -21,7 +22,8 @@ TOP_K = 1000
 
 for _ , item in enumerate(tqdm(ds, desc="Building vocab")):
     text = item.get("text", "")
-    tokens = (word.strip() for word in jieba.cut(text) if word.strip())
+    text = unicodedata.normalize("NFKC", text).replace("\u3000", " ")
+    tokens = (word.strip() for word in jieba.cut(text) if len(word.strip()) >= 2 and not word.strip().isnumeric())
     vocab_counter.update(tokens)
 
 top_tokens_with_freq = vocab_counter.most_common(TOP_K)
