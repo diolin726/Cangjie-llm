@@ -48,8 +48,7 @@ dataset_mix = [
     {
         "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
         "weight": 0.2,
-        "dataset_dir": "4_5",
-        "data_files":["000*"]
+        "dataset_dir": "4_5"
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
