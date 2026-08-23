@@ -46,8 +46,13 @@ token_shard_max_cache_gb = 40
 token_shard_validation_shards = 4
 dataset_mix = [
     {
+        "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
+        "weight": 0.2,
+        "dataset_dir": "4_5"
+    },
+    {
         "name": "yuhuanstudio/wikipedia-zh-tw",
-        "weight": 0.35
+        "weight": 0.2
     },
     {
         "name": "yuhuanstudio/OpenNewsArchive_pretrain_zhtw",
@@ -59,7 +64,7 @@ dataset_mix = [
     },
     {
         "name": "yuhuanstudio/PTT-pretrain-zhtw",
-        "weight": 0.15
+        "weight": 0.1
     }
 ]
 streaming_shuffle_buffer = 1_024
