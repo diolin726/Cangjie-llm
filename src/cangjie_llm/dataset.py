@@ -218,6 +218,8 @@ def _load_source_dataset(
                     for item, prob in zip(dataset_mix, probabilities)
                 )
             )
+        if streaming:
+            print(f"dataset size:{ds.dataset_size}")
         return ds
 
     return load_dataset(
