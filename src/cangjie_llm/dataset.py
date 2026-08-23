@@ -208,7 +208,7 @@ def _load_source_dataset(
             loaded_datasets,
             probabilities=probabilities,
             seed=67,
-            stopping_strategy="all_exhausted",
+            stopping_strategy="first_exhausted",
         )
         if verbose:
             print(
