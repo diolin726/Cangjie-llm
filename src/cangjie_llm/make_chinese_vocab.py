@@ -1,4 +1,5 @@
 import jieba
+from collections import Counter
 from .dataset import _load_source_dataset
 from .config import dataset_mix
 ds=_load_source_dataset(
@@ -11,4 +12,22 @@ ds=_load_source_dataset(
     streaming=True,
     verbose=True,
     )
-print( ds[0]["text"] )
+
+vocab_counter = Counter()
+TOP_K = 1000
+
+for _ , item in enumerate(tqdm(ds, desc="Building vocab")):
+    text = item.get("text", "")
+    tokens = (word.strip() for word in jieba.cut(text) if word.strip())
+    vocab_counter.update(tokens)
+
+top_tokens_with_freq = vocab_counter.most_common(TOP_K)
+top_tokens = [word for word, count in top_tokens_with_freq]
+
+print("\n--- Top 20 Tokens ---")
+for word, count in top_tokens_with_freq[:20]:
+    print(f"{word}: {count:,}")
+
+with open("chinese_vocab_top1000.txt", "w", encoding="utf-8") as f:
+    for token in top_tokens:
+        f.write(f"{token}\n")
