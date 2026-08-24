@@ -81,9 +81,11 @@ class cj_encoder:
         extend = rows.extend
 
         for tokens in jieba.cut(s):
-            encoded = encoded_token_rows.get(tokens)
-            if encoded is not None and random.random() > word_token_threshold:
-                append(encoded)
+            print(tokens)
+            single = single_token_rows.get(tokens)
+            print(f"encoded is {single}")
+            if single is not None and random.random() > word_token_threshold:
+                append(single)
                 continue
             for token in tokens:
                 encoded = encoded_token_rows.get(token)
