@@ -24,7 +24,7 @@ for _ , item in enumerate(tqdm(ds, desc="Building vocab")):
     text = item.get("text", "")
     text = unicodedata.normalize("NFKC", text).replace("\u3000", " ")
     text = convertor.convert(text)
-    tokens = (word.strip() for word in jieba.cut(text) if len(word.strip()) >= 2 and not word.strip().isnumeric())
+    tokens = (word.strip() for word in jieba.cut(text) if len(word.strip()) >= 2 and not word.strip().isnumeric()  and not w.strip()[0].isascii())
     vocab_counter.update(tokens)
 
 top_tokens_with_freq = vocab_counter.most_common(TOP_K)
