@@ -23,7 +23,7 @@ convertor = OpenCC("s2twp")
 for _ , item in enumerate(tqdm(ds, desc="Building vocab")):
     text = item.get("text", "")
     text = unicodedata.normalize("NFKC", text).replace("\u3000", " ")
-    text = convertor(text)
+    text = convertor.convert(text)
     tokens = (word.strip() for word in jieba.cut(text) if len(word.strip()) >= 2 and not word.strip().isnumeric())
     vocab_counter.update(tokens)
 
