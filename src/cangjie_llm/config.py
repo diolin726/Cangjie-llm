@@ -4,13 +4,15 @@ import re
 
 import torch
 
+from cangjie_convertor.encoder import get_vocab_size
+
 torch.manual_seed(67)  # 676767
 
 # ===== 可調參數 =====
 dropout = 0.05
 embed_size = 512
 ffn_hidden_size = 1344
-vocab_size = 383  # 需要手動調整
+vocab_size = get_vocab_size()
 batch_size = 128
 accumulation_steps = 8
 grad_clip = 1.0

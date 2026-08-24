@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 
 from cangjie_convertor._shared import get_cj_key_fingerprint
+from cangjie_convertor.encoder import get_vocab_fingerprint
 
 from .config import (
     block_size as default_block_size,
@@ -46,6 +47,7 @@ def _build_cache_metadata(
     json_path,
     split,
     cj_key_fingerprint,
+    vocab_fingerprint,
     source_filter,
     source_filter_mode,
 ):
@@ -58,6 +60,7 @@ def _build_cache_metadata(
         "json_path": json_path,
         "split": split,
         "cj_key_fingerprint": cj_key_fingerprint,
+        "vocab_fingerprint": vocab_fingerprint,
         "source_filter": source_filter,
         "source_filter_mode": source_filter_mode,
     }
@@ -298,6 +301,7 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
         if source_filter_mode not in {"include", "exclude"}:
             raise ValueError("source_filter_mode 必須是 'include' 或 'exclude'")
         self.cj_key_fingerprint = get_cj_key_fingerprint()
+        self.vocab_fingerprint = get_vocab_fingerprint()
         self.cache_metadata = _build_cache_metadata(
             dataset_name=dataset_name,
             dataset_mix=dataset_mix,
@@ -306,6 +310,7 @@ class CangjieDataset(Dataset):  # this part is by ai, im sorry but im trash
             json_path=json_path,
             split=split,
             cj_key_fingerprint=self.cj_key_fingerprint,
+            vocab_fingerprint=self.vocab_fingerprint,
             source_filter=source_filter,
             source_filter_mode=source_filter_mode,
         )

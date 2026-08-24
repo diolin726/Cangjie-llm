@@ -305,7 +305,41 @@ class LLM(nn.Module):
         self.apply(self._init_weights)
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
-        """Allow older pure-Cangjie checkpoints to omit newly added slot heads."""
+        """Load older checkpoints after a direct-token vocabulary expansion."""
+        normalized_state_dict = {}
+        for key, value in state_dict.items():
+            while key.startswith("_orig_mod.") or key.startswith("module."):
+                key = key.removeprefix("_orig_mod.").removeprefix("module.")
+            normalized_state_dict[key] = value
+        state_dict = normalized_state_dict
+
+        current_state = self.state_dict()
+        expanded_vocab = None
+        for embedding_key in (
+            "embedding.token_emb.weight",
+            "head.emb_layer.token_emb.weight",
+        ):
+            checkpoint_embedding = state_dict.get(embedding_key)
+            current_embedding = current_state[embedding_key]
+            if (
+                isinstance(checkpoint_embedding, torch.Tensor)
+                and checkpoint_embedding.shape != current_embedding.shape
+                and checkpoint_embedding.ndim == 2
+                and checkpoint_embedding.shape[1] == current_embedding.shape[1]
+                and checkpoint_embedding.shape[0] < current_embedding.shape[0]
+            ):
+                expanded_embedding = current_embedding.detach().clone()
+                expanded_embedding[:checkpoint_embedding.shape[0]].copy_(checkpoint_embedding)
+                state_dict[embedding_key] = expanded_embedding
+                expanded_vocab = (checkpoint_embedding.shape[0], current_embedding.shape[0])
+        if expanded_vocab is not None:
+            print(f"expanded checkpoint vocabulary: {expanded_vocab[0]} -> {expanded_vocab[1]}")
+
+        # These buffers are deterministic functions of the current vocabulary.
+        for key in ("head.output_codes", "head.sorted_hashes", "head.sorted_indices"):
+            if key in current_state:
+                state_dict[key] = current_state[key]
+
         incompatible = super().load_state_dict(state_dict, strict=False, assign=assign)
         allowed_missing = [
             key for key in incompatible.missing_keys

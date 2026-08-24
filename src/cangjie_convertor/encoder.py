@@ -1,4 +1,61 @@
+import hashlib
+import json
+from functools import lru_cache
+from pathlib import Path
+
 from ._shared import load_cj_assets
+
+
+CHINESE_VOCAB_PATH = Path(__file__).resolve().parent.parent / "cangjie_llm" / "chinese_vocab_top1000.json"
+
+
+@lru_cache(maxsize=1)
+def load_chinese_vocab():
+    """Load optional direct Chinese word tokens while preserving base token IDs."""
+    if not CHINESE_VOCAB_PATH.exists():
+        return ()
+
+    with CHINESE_VOCAB_PATH.open(encoding="utf-8") as file:
+        entries = json.load(file)
+    if not isinstance(entries, list):
+        raise ValueError(f"中文詞彙檔必須是 JSON list: {CHINESE_VOCAB_PATH}")
+
+    seen = set()
+    words = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry or entry in seen:
+            continue
+        if entry.startswith("cj_") or entry.startswith("<BYTE_"):
+            raise ValueError(f"中文詞彙不可使用保留 token 名稱: {entry}")
+        seen.add(entry)
+        words.append(entry)
+    return tuple(words)
+
+
+def _vocab_tokens():
+    """Return the token order shared by the encoder and model configuration."""
+    special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
+    cangjie_symbols = [
+        'cj_a', 'cj_b', 'cj_c', 'cj_d', 'cj_e', 'cj_f',
+        'cj_g', 'cj_h', 'cj_i', 'cj_j', 'cj_k', 'cj_l',
+        'cj_m', 'cj_n', 'cj_o', 'cj_p', 'cj_q', 'cj_r',
+        'cj_s', 'cj_t', 'cj_u', 'cj_v', 'cj_w', 'cj_x',
+        'cj_y', 'cj_z',
+    ]
+    ascii_chars = [chr(i) for i in range(32, 127)] + ['\n', '\t']
+    byte_tokens = [f"<BYTE_{i}>" for i in range(256)]
+    # Keep the historical 383 entries unchanged so old checkpoints remain reusable.
+    return cangjie_symbols + special_tokens + ascii_chars + byte_tokens + list(load_chinese_vocab())
+
+
+def get_vocab_size():
+    """Derive the input vocabulary size from the encoder's canonical token list."""
+    return len(_vocab_tokens())
+
+
+def get_vocab_fingerprint():
+    """Fingerprint the direct-token vocabulary for token-cache invalidation."""
+    return hashlib.sha256("\n".join(_vocab_tokens()).encode("utf-8")).hexdigest()
 
 
 class cj_encoder:
@@ -22,6 +79,11 @@ class cj_encoder:
             char: tuple(self.vocab[token] for token in tokens)
             for char, tokens in self.encoded_tokens.items()
         }
+        self.chinese_words_by_first_char = {}
+        for word in load_chinese_vocab():
+            self.chinese_words_by_first_char.setdefault(word[0], []).append(word)
+        for words in self.chinese_words_by_first_char.values():
+            words.sort(key=lambda word: (-len(word), word))
         self.byte_rows_cache = {}
         self.char_to_output_id = {
             char: self.reversed_cj_key[key] + self.vocab_size - 26
@@ -31,22 +93,9 @@ class cj_encoder:
     def make_vocab(self):
         self.vocab={}
         self.id_to_vocab=[]
-        special_tokens = ["[PAD]", "[UNK]", "[BOS]", "[EOS]"]
-        cangjie_symbols = [
-                'cj_a', 'cj_b', 'cj_c', 'cj_d', 'cj_e', 'cj_f',
-                'cj_g', 'cj_h', 'cj_i', 'cj_j', 'cj_k', 'cj_l',
-                'cj_m', 'cj_n', 'cj_o', 'cj_p', 'cj_q', 'cj_r',
-                'cj_s', 'cj_t', 'cj_u', 'cj_v', 'cj_w', 'cj_x',
-                'cj_y', 'cj_z',
-                ]
-        ascii_chars = [chr(i) for i in range(32, 127)] + ['\n', '\t']
-        for s in cangjie_symbols + special_tokens  + ascii_chars:
-            self.vocab[s] = len(self.vocab)
-            self.id_to_vocab.append(s)
-        for i in range(256):
-            byte_token = f"<BYTE_{i}>"
-            self.vocab[byte_token] = len(self.vocab)
-            self.id_to_vocab.append(byte_token)
+        for token in _vocab_tokens():
+            self.vocab[token] = len(self.vocab)
+            self.id_to_vocab.append(token)
 
     def encode(self, s):
         encoded_tokens = self.encoded_tokens
@@ -63,15 +112,32 @@ class cj_encoder:
         append = rows.append
         extend = rows.extend
 
-        for token in s:
+        index = 0
+        while index < len(s):
+            token = s[index]
+            matched_word = next(
+                (
+                    word
+                    for word in self.chinese_words_by_first_char.get(token, ())
+                    if s.startswith(word, index)
+                ),
+                None,
+            )
+            if matched_word is not None:
+                append(single_token_rows[matched_word])
+                index += len(matched_word)
+                continue
+
             encoded = encoded_token_rows.get(token)
             if encoded is not None:
                 append(encoded)
+                index += 1
                 continue
 
             single = single_token_rows.get(token)
             if single is not None:
                 append(single)
+                index += 1
                 continue
 
             cached = byte_rows_cache.get(token)
@@ -85,6 +151,7 @@ class cj_encoder:
                     cached = (unk_row,)
                 byte_rows_cache[token] = cached
             extend(cached)
+            index += 1
 
         return rows
 
