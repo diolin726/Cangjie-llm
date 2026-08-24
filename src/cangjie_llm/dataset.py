@@ -642,7 +642,14 @@ class StreamingCangjieDataset(IterableDataset):
         )
         if num_workers > 1:
             # Give each worker a separate source slice before it shuffles and tokenizes.
-            ds = ds.shard(num_shards=num_workers, index=worker_id)
+            try:
+                ds = ds.shard(num_shards=num_workers, index=worker_id)
+            except IndexError:
+                # Some interleaved streaming sources cannot be sharded. Let one worker
+                # consume the stream rather than crashing or duplicating examples.
+                if worker_id != 0:
+                    return None
+                print("Streaming 資料集不支援 worker shard；改由單一 worker 讀取")
         if self.shuffle_buffer and self.shuffle_buffer > 0:
             ds = ds.shuffle(
                 seed=self.seed + self.epoch + worker_id,
@@ -659,6 +666,8 @@ class StreamingCangjieDataset(IterableDataset):
 
             disable_progress_bars()
         ds = self._build_stream(worker_id=worker_id, num_workers=num_workers)
+        if ds is None:
+            return
 
         row_buffer = np.empty((0, 5), dtype=np.int16)
         output_buffer = np.empty((0,), dtype=np.int16)
