@@ -4,15 +4,13 @@ import re
 
 import torch
 
-from cangjie_convertor.encoder import get_vocab_size
-
 torch.manual_seed(67)  # 676767
 
 # ===== 可調參數 =====
 dropout = 0.05
 embed_size = 512
 ffn_hidden_size = 1344
-vocab_size = get_vocab_size()
+
 batch_size = 128
 accumulation_steps = 8
 grad_clip = 1.0
@@ -50,7 +48,8 @@ dataset_mix = [
     {
         "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
         "weight": 0.2,
-        "dataset_dir": "4_5"
+        "dataset_dir": "4_5",
+        "data_files":["000*"]
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
@@ -92,6 +91,11 @@ common_word_table_size = 20000
 common_word_max_length = 4
 detokenize_beam_size = 4
 detokenize_context_window = 12
+
+#auto check vocab_size
+from cangjie_convertor import cj_encoder
+vocab_size_use = cj_encoder()
+vocab_size = vocab_size_use.vocab_size #383
 
 # Remove regex backreference remnants such as ``\1`` or ``\123`` before tokenization.
 training_escape_pattern = re.compile(r"\\[1-9][0-9]*")
