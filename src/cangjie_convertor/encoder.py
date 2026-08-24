@@ -1,5 +1,8 @@
 from ._shared import load_cj_assets
+import jieba
+import random
 
+word_token_threshold=0.5
 
 class cj_encoder:
     def __init__(self , vocab_size):
@@ -70,28 +73,32 @@ class cj_encoder:
         append = rows.append
         extend = rows.extend
 
-        for token in s:
-            encoded = encoded_token_rows.get(token)
-            if encoded is not None:
+        for tokens in jieba.cut(s):
+            encoded = encoded_token_rows.get(tokens)
+            if encoded is not None and random.random() > word_token_threshold:
                 append(encoded)
                 continue
+            for token in tokens:
+                encoded = encoded_token_rows.get(token)
+                if encoded is not None:
+                    append(encoded)
+                    continue
+                single = single_token_rows.get(token)
+                if single is not None:
+                    append(single)
+                    continue
 
-            single = single_token_rows.get(token)
-            if single is not None:
-                append(single)
-                continue
-
-            cached = byte_rows_cache.get(token)
-            if cached is None:
-                try:
-                    cached = tuple(
-                        (vocab[f"<BYTE_{byte}>"], pad_id, pad_id, pad_id, pad_id)
-                        for byte in token.encode("utf-8")
-                    )
-                except Exception:
-                    cached = (unk_row,)
-                byte_rows_cache[token] = cached
-            extend(cached)
+                cached = byte_rows_cache.get(token)
+                if cached is None:
+                    try:
+                        cached = tuple(
+                            (vocab[f"<BYTE_{byte}>"], pad_id, pad_id, pad_id, pad_id)
+                            for byte in token.encode("utf-8")
+                        )
+                    except Exception:
+                        cached = (unk_row,)
+                    byte_rows_cache[token] = cached
+                extend(cached)
 
         return rows
 
