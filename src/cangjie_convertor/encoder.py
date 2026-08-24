@@ -1,8 +1,15 @@
 from ._shared import load_cj_assets
+import hashlib
 import jieba
 import random
 
 word_token_threshold=0.5
+
+
+def get_vocab_fingerprint():
+    """Identify the current direct-token vocabulary for cache validation."""
+    encoder = cj_encoder()
+    return hashlib.sha256("\n".join(encoder.id_to_vocab).encode("utf-8")).hexdigest()
 
 class cj_encoder:
     def __init__(self ):

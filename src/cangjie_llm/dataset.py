@@ -190,11 +190,12 @@ def _load_source_dataset(
                 split=mix_split,
                 streaming=streaming,
             )
-            if streaming and verbose:
-                print(
-                    f"載入混合資料集(Streaming): {mix_name} | split={mix_split} | "
-                    f"weight={mix_weight:.3f}"
-                )
+            if streaming:
+                if verbose:
+                    print(
+                        f"載入混合資料集(Streaming): {mix_name} | split={mix_split} | "
+                        f"weight={mix_weight:.3f}"
+                    )
             else:
                 print(
                     f"載入混合資料集: {mix_name} | split={mix_split} | "
