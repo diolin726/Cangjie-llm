@@ -47,6 +47,13 @@ class cj_encoder:
             byte_token = f"<BYTE_{i}>"
             self.vocab[byte_token] = len(self.vocab)
             self.id_to_vocab.append(byte_token)
+        import json
+        from pathlib import Path
+        with open(Path(__file__).resolve().parent /".json", "r", encoding="utf-8") as f:
+            chinese_vocab_data = json.load(f)
+        for token in chinese_vocab_data:
+            self.vocab[token] = len(self.vocab)
+            self.id_to_vocab.append(token)
 
     def encode(self, s):
         encoded_tokens = self.encoded_tokens
