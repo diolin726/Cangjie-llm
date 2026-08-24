@@ -5,7 +5,7 @@ from collections import Counter
 from tqdm import tqdm
 from .dataset import _load_source_dataset
 from .config import dataset_mix
-
+from opencc import OpenCC
 ds=_load_source_dataset(
     json_path=None,
     dataset_name=None,
@@ -19,10 +19,11 @@ ds=_load_source_dataset(
 
 vocab_counter = Counter()
 TOP_K = 1000
-
+convertor = OpenCC("s2twp")
 for _ , item in enumerate(tqdm(ds, desc="Building vocab")):
     text = item.get("text", "")
     text = unicodedata.normalize("NFKC", text).replace("\u3000", " ")
+    text = convertor(text)
     tokens = (word.strip() for word in jieba.cut(text) if len(word.strip()) >= 2 and not word.strip().isnumeric())
     vocab_counter.update(tokens)
 
