@@ -5,9 +5,9 @@ import random
 word_token_threshold=0.5
 
 class cj_encoder:
-    def __init__(self , vocab_size):
-        self.vocab_size = vocab_size
+    def __init__(self ):
         self.make_vocab()
+        self.vocab_size = len(self.vocab)
         self.data_map, _, self.reversed_cj_key, _, self.encoded_tokens = load_cj_assets()
         self.pad_id = self.vocab["[PAD]"]
         self.unk_row = (
@@ -52,7 +52,7 @@ class cj_encoder:
             self.id_to_vocab.append(byte_token)
         import json
         from pathlib import Path
-        with open(Path(__file__).resolve().parent /".json", "r", encoding="utf-8") as f:
+        with open(Path(__file__).resolve().parent /"chinese_vocab_top1000.json", "r", encoding="utf-8") as f:
             chinese_vocab_data = json.load(f)
         for token in chinese_vocab_data:
             self.vocab[token] = len(self.vocab)

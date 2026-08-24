@@ -137,7 +137,7 @@ def _context_from_tokens(tokens, limit):
 class tokenizer:
     def __init__(self):
         self.decoder = cj_decoder()
-        self.cj_encoder = cj_encoder(vocab_size)
+        self.cj_encoder = cj_encoder()
         self.vocab = self.cj_encoder.vocab
         self.id_to_vocab = self.cj_encoder.id_to_vocab
 
