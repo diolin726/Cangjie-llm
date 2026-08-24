@@ -1,10 +1,13 @@
 import math
 import os
 import re
+from pathlib import Path
 
 import torch
 
 torch.manual_seed(67)  # 676767
+
+PACKAGE_DIR = Path(__file__).resolve().parent
 
 # ===== 可調參數 =====
 dropout = 0.05
@@ -77,10 +80,10 @@ validation_max_batches = 8
 sample_prompts = [""]
 sample_max_tokens = 24
 resume_training = False
-resume_checkpoint_path = "src/cangjie_llm/training_resume.pt"
-initial_checkpoint_path = "src/cangjie_llm/best_val.pt"
-best_checkpoint_path = "src/cangjie_llm/best_val.pt"
-latest_checkpoint_path_template = "src/cangjie_llm/cangjie_epoch_{epoch}_latest.pt"
+resume_checkpoint_path = str(PACKAGE_DIR / "training_resume.pt")
+initial_checkpoint_path = str(PACKAGE_DIR / "best_val.pt")
+best_checkpoint_path = str(PACKAGE_DIR / "best_val.pt")
+latest_checkpoint_path_template = str(PACKAGE_DIR / "cangjie_epoch_{epoch}_latest.pt")
 preprocess_batch_size = 1024
 preprocess_chunk_rows = 10_000_000
 preprocess_workers = max(1, min(4, os.cpu_count() or 1))
