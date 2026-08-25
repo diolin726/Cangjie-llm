@@ -291,7 +291,7 @@ def generate_sample_text(model, tok, prompt_text, max_tokens):
             if eos_id is not None and next_tok_id == eos_id:
                 break
             tok_id_list.append(next_tok_id)
-        return tok.detokenize(tok_id_list).removeprefix("[BOS]")
+        return tok.detokenize_training(tok_id_list).removeprefix("[BOS]")
     finally:
         if was_training:
             model.train()

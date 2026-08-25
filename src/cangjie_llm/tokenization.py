@@ -273,5 +273,85 @@ class tokenizer:
 
         return "".join(beams[0][1]) if beams else ""
 
+    def detokenize_training(self, id_list):
+        import jieba
+
+        jieba.initialize()
+        common_char_rank = get_common_char_rank()
+        common_words_by_last_char = get_common_words_by_last_char()
+        freq_table = jieba.dt.FREQ
+
+        raw = self.id_decode(id_list)
+
+        # 合併連續的 <BYTE_x> token，還原成原本的 utf-8 字元（例如 emoji）
+        merged = []
+        idx = 0
+        while idx < len(raw):
+            item = raw[idx]
+            if isinstance(item, str) and item.startswith("<BYTE_"):
+                byte_buf = []
+                while idx < len(raw) and isinstance(raw[idx], str) and raw[idx].startswith("<BYTE_"):
+                    byte_buf.append(int(raw[idx][6:-1]))
+                    idx += 1
+                try:
+                    merged.append(bytes(byte_buf).decode("utf-8"))
+                except UnicodeDecodeError:
+                    merged.append("�")
+                continue
+            merged.append(item)
+            idx += 1
+
+        # 用 beam search 消歧倉頡同碼字，避免逐字 greedy 太早定案。
+        beams = [((0, 0, 0, 0, 0, 0, 0, 0), [])]
+        for item in merged:
+            if not isinstance(item, list):
+                for beam_idx, (score, tokens) in enumerate(beams):
+                    next_tokens = list(tokens)
+                    next_tokens.append(item)
+                    beams[beam_idx] = (score, next_tokens)
+                continue
+
+            candidates = list(dict.fromkeys(
+                cand for cand in item
+                if isinstance(cand, str) and len(cand) == 1
+            ))
+            if not candidates:
+                fallback = item[0] if item else ""
+                for beam_idx, (score, tokens) in enumerate(beams):
+                    next_tokens = list(tokens)
+                    next_tokens.append(fallback)
+                    beams[beam_idx] = (score, next_tokens)
+                continue
+
+            expanded_beams = []
+            for score, tokens in beams:
+                context = _context_from_tokens(tokens, detokenize_context_window)
+                for cand in candidates:
+                    local_score = _candidate_local_score(
+                        context,
+                        cand,
+                        common_words_by_last_char,
+                        freq_table,
+                        common_char_rank,
+                    )
+                    next_tokens = list(tokens)
+                    next_tokens.append(cand)
+                    expanded_beams.append((_add_score_tuple(score, local_score), next_tokens))
+
+            deduped_beams = {}
+            for score, tokens in expanded_beams:
+                text_key = "".join(tokens)
+                prev = deduped_beams.get(text_key)
+                if prev is None or score > prev[0]:
+                    deduped_beams[text_key] = (score, tokens)
+
+            beams = sorted(
+                deduped_beams.values(),
+                key=lambda beam: beam[0],
+                reverse=True,
+            )[:detokenize_beam_size]
+
+        return "".join(f"[{token}]" for token in beams[0][1] if token) if beams else ""
+
 
 __all__ = ["tokenizer"]
