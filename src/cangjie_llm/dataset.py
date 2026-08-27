@@ -23,6 +23,7 @@ from .config import (
     preprocess_workers,
     training_escape_pattern,
     window_stride,
+    dataset_stopping_strategy,
 )
 from .tokenization import tokenizer
 
@@ -212,7 +213,7 @@ def _load_source_dataset(
             loaded_datasets,
             probabilities=probabilities,
             seed=67,
-            stopping_strategy="first_exhausted",
+            stopping_strategy="dataset_stopping_strategy",
         )
         if verbose:
             print(

@@ -56,7 +56,7 @@ dataset_mix = [
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
-        "weight": 0.2
+        "weight": 0.25
     },
     {
         "name": "yuhuanstudio/OpenNewsArchive_pretrain_zhtw",
@@ -69,19 +69,19 @@ dataset_mix = [
     },
     {
         "name": "yuhuanstudio/PTT-pretrain-zhtw",
-        "weight": 0.1
+        "weight": 0.05
     },
     {
         "name": "ticoAg/shibing624-medical-pretrain",
-        "weight":0.04 
+        "weight": 0.0299 
     },
     {
         "name": "DataAgent/Pretrain-Taiwan-DentistKnowledge-zhTW-290K",
-        "weight": 0.01   
+        "weight": 0.0001   
     },
     {
         "name": "liswei/Taiwan-Text-Excellence-2B",
-        "weight": 0.1
+        "weight": 0.12
     }
 ]
 streaming_shuffle_buffer = 1_024
@@ -107,6 +107,8 @@ common_word_table_size = 20000
 common_word_max_length = 4
 detokenize_beam_size = 4
 detokenize_context_window = 12
+
+dataset_stopping_strategy="all_exhuasted"
 
 #auto check vocab_size
 from cangjie_convertor import cj_encoder
@@ -161,6 +163,7 @@ __all__ = [
     "dataset_name",
     "dataset_split",
     "dataset_streaming",
+    "dataset_stopping_strategy"
     "device",
     "dropout",
     "embed_size",
