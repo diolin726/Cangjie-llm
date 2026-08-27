@@ -24,13 +24,13 @@ n_head = 8
 n_kv_head = 4
 n_layer = 10
 rope_theta = 1e6
-lr = 3e-5
-min_lr = 3e-6
+lr = 3e-4
+min_lr = 3e-5
 warmup_steps = 200
 plateau_patience = 3
 plateau_factor = 0.5
 plateau_min_delta = 0.003
-plateau_min_lr = 3e-6
+plateau_min_lr = 3e-5
 epochs = 1
 log_interval = 1000
 checkpoint_interval = 1000
@@ -42,17 +42,17 @@ dataset_name = "yuhuanstudio/wikipedia-zh-tw"
 dataset_split = "train"
 dataset_cache_path = "./cangjie_cached.pt"
 dataset_streaming = False
-use_token_shards = False
+use_token_shards = True
 token_shard_dir = "./cangjie_token_shards"
 token_shard_size_mb = 256
-token_shard_max_cache_gb = 40
+token_shard_max_cache_gb = 50
 token_shard_validation_shards = 4
 dataset_mix = [
     {
         "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
-        "weight": 0.2,
+        "weight": 0.15,
         "dataset_dir": "4_5",
-        "data_files":["000*"]
+        "data_files":["001*"]
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
@@ -64,10 +64,23 @@ dataset_mix = [
     },
     {
         "name": "agentlans/traditional-chinese",
-        "weight": 0.2
+        "weight": 0.1,
+        "dataset_dir": "taiwan-style"
     },
     {
         "name": "yuhuanstudio/PTT-pretrain-zhtw",
+        "weight": 0.1
+    },
+    {
+        "name": "ticoAg/shibing624-medical-pretrain",
+        "weight":0.04 
+    },
+    {
+        "name": "DataAgent/Pretrain-Taiwan-DentistKnowledge-zhTW-290K",
+        "weight": 0.01   
+    }
+    {
+        "name": "liswei/Taiwan-Text-Excellence-2B",
         "weight": 0.1
     }
 ]
@@ -78,7 +91,7 @@ streaming_num_workers = 4
 validation_ratio = 0.002
 validation_max_batches = 8
 sample_prompts = ["" , "台灣最高的山是","路口那家小吃店","1~100裡面我選","以下是中國的省份:"]
-sample_max_tokens = 24
+sample_max_tokens = 50
 resume_training = False
 resume_checkpoint_path = str(PACKAGE_DIR / "training_resume.pt")
 initial_checkpoint_path = str(PACKAGE_DIR / "best_val.pt")
