@@ -213,7 +213,7 @@ def _load_source_dataset(
             loaded_datasets,
             probabilities=probabilities,
             seed=67,
-            stopping_strategy="dataset_stopping_strategy",
+            stopping_strategy=dataset_stopping_strategy,
         )
         if verbose:
             print(
