@@ -78,7 +78,7 @@ dataset_mix = [
     {
         "name": "DataAgent/Pretrain-Taiwan-DentistKnowledge-zhTW-290K",
         "weight": 0.01   
-    }
+    },
     {
         "name": "liswei/Taiwan-Text-Excellence-2B",
         "weight": 0.1
