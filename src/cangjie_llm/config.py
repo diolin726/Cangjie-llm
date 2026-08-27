@@ -108,7 +108,7 @@ common_word_max_length = 4
 detokenize_beam_size = 4
 detokenize_context_window = 12
 
-dataset_stopping_strategy="all_exhuasted"
+dataset_stopping_strategy="all_exhausted"
 
 #auto check vocab_size
 from cangjie_convertor import cj_encoder
