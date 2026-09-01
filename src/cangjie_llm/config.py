@@ -10,7 +10,7 @@ torch.manual_seed(67)  # 676767
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 # ===== 可調參數 =====
-dropout = 0.05
+dropout = 0.00
 embed_size = 512
 ffn_hidden_size = 1344
 
@@ -23,14 +23,14 @@ window_stride = 128
 n_head = 8
 n_kv_head = 4
 n_layer = 10
-rope_theta = 1e6
-lr = 3e-4
-min_lr = 3e-5
+rope_theta = 10000.0
+lr = 1.5e-3
+min_lr = 1.5e-4
 warmup_steps = 200
 plateau_patience = 3
 plateau_factor = 0.5
 plateau_min_delta = 0.003
-plateau_min_lr = 3e-5
+plateau_min_lr = 1.5e-4
 epochs = 1
 log_interval = 1000
 checkpoint_interval = 1000
@@ -50,17 +50,17 @@ token_shard_validation_shards = 4
 dataset_mix = [
     {
         "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
-        "weight": 0.15,
+        "weight": 0.3,
         "dataset_dir": "4_5",
-        "data_files":["001*"]
+        "data_files":["002*"]
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
-        "weight": 0.25
+        "weight": 0.20
     },
     {
         "name": "yuhuanstudio/OpenNewsArchive_pretrain_zhtw",
-        "weight": 0.3
+        "weight": 0.25
     },
     {
         "name": "agentlans/traditional-chinese",
@@ -72,19 +72,11 @@ dataset_mix = [
         "weight": 0.05
     },
     {
-        "name": "ticoAg/shibing624-medical-pretrain",
-        "weight": 0.0299 
-    },
-    {
-        "name": "DataAgent/Pretrain-Taiwan-DentistKnowledge-zhTW-290K",
-        "weight": 0.0001   
-    },
-    {
         "name": "liswei/Taiwan-Text-Excellence-2B",
-        "weight": 0.12
+        "weight": 0.1
     }
 ]
-streaming_shuffle_buffer = 1_024
+streaming_shuffle_buffer = 10_240
 streaming_steps_per_epoch = 61_507
 streaming_text_batch_size = 256
 streaming_num_workers = 4
@@ -108,7 +100,7 @@ common_word_max_length = 4
 detokenize_beam_size = 4
 detokenize_context_window = 12
 
-dataset_stopping_strategy="all_exhausted"
+dataset_stopping_strategy="first_exhausted" # or "all_exhausted"
 
 #auto check vocab_size
 from cangjie_convertor import cj_encoder
