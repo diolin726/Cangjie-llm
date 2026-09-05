@@ -549,7 +549,7 @@ def main():
                     print("Streaming 資料提早耗盡，提前結束本 epoch")
                     break
             else:
-                step, (x, y) = step_item
+                step , (x,y) = step_item 
 
             global_step = epoch * num_batches + step + 1
             current_lr = get_lr(global_step, total_steps)

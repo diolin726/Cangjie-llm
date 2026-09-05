@@ -10,7 +10,7 @@ torch.manual_seed(67)  # 676767
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 # ===== 可調參數 =====
-dropout = 0.00
+dropout = 0.05
 embed_size = 512
 ffn_hidden_size = 1344
 
@@ -24,14 +24,14 @@ n_head = 8
 n_kv_head = 4
 n_layer = 10
 rope_theta = 10000.0
-lr = 1.5e-3
-min_lr = 1.5e-4
+lr = 1.5e-3 
+min_lr = 1.5e-4 
 warmup_steps = 200
 plateau_patience = 3
 plateau_factor = 0.5
 plateau_min_delta = 0.003
-plateau_min_lr = 1.5e-4
-epochs = 1
+plateau_min_lr = 1.5e-4 
+epochs = 5
 log_interval = 1000
 checkpoint_interval = 1000
 torch_compile_mode = "default"
@@ -49,18 +49,22 @@ token_shard_max_cache_gb = 50
 token_shard_validation_shards = 4
 dataset_mix = [
     {
+        "name": "HuggingFaceFW/fineweb",
+        "weight": 0.2
+    },
+    {
         "name": "opencsg/Fineweb-Edu-Chinese-V2.1",
-        "weight": 0.3,
+        "weight": 0.25,
         "dataset_dir": "4_5",
-        "data_files":["002*"]
+        "data_files":["000*"]
     },
     {
         "name": "yuhuanstudio/wikipedia-zh-tw",
-        "weight": 0.20
+        "weight": 0.1
     },
     {
         "name": "yuhuanstudio/OpenNewsArchive_pretrain_zhtw",
-        "weight": 0.25
+        "weight": 0.20
     },
     {
         "name": "agentlans/traditional-chinese",
