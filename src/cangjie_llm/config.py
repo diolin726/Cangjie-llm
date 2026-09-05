@@ -19,11 +19,11 @@ accumulation_steps = 8
 grad_clip = 1.0
 num_workers = 8
 block_size = 256
-window_stride = 128
+window_stride = 256
 n_head = 8
 n_kv_head = 4
 n_layer = 10
-rope_theta = 10000.0
+rope_theta = 100000.0
 lr = 1.5e-3 
 min_lr = 1.5e-4 
 warmup_steps = 200
@@ -159,7 +159,7 @@ __all__ = [
     "dataset_name",
     "dataset_split",
     "dataset_streaming",
-    "dataset_stopping_strategy"
+    "dataset_stopping_strategy",
     "device",
     "dropout",
     "embed_size",
